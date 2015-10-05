@@ -12,7 +12,13 @@ requests to achieve high throughput.
 The underlying Go library can also be imported into other projects to provide
 scan facilities.
 
+## Download
+
+Binaries are available for Linux, Solaris, Windows and Mac for the
+[latest release](https://github.com/gwatts/dyndump/releases).
+
 ## Utility Usage
+
 
 ```
 Usage of dyndump:
