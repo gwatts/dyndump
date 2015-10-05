@@ -1,7 +1,10 @@
-# AWS DynamoDB Table Dump Utility
+# AWS DynamoDB Table Dump 
+
+![Build Status](https://travis-ci.org/gwatts/dyndump.svg?branch=master)](https://travis-ci.org/gwatts/dyndump)
+
 
 This utility performs a full scan of an AWS DynamoDB table and outputs each
-row as JSON.
+row as a JSON object.
 
 It supports rate-limiting to a specified average read capacity and parallel
 requests to achieve high throughput.
@@ -59,3 +62,9 @@ AWS credentials required to connect to DynamoDB must be passed in using
 environment variables:
 * AWS_ACCESS_KEY_ID
 * AWS_SECRET_KEY
+
+## dyndump library
+
+See the [godoc documentation](https://godoc.org/github.com/gwatts/dyndump/dyndump)
+for the github.com/gwatts/dyndump/dyndump library to integrate scanning into
+your own projects.
