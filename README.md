@@ -1,6 +1,6 @@
 # AWS DynamoDB Table Dump 
 
-![Build Status](https://travis-ci.org/gwatts/dyndump.svg?branch=master)](https://travis-ci.org/gwatts/dyndump)
+[![Build Status](https://travis-ci.org/gwatts/dyndump.svg?branch=master)](https://travis-ci.org/gwatts/dyndump)
 
 
 This utility performs a full scan of an AWS DynamoDB table and outputs each
