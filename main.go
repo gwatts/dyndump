@@ -44,8 +44,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/gwatts/dyndump/dyndump"
 )
@@ -63,7 +62,6 @@ var (
 	outFilename      = flag.String("target", "-", "Filename to write data to.  Defaults to stdout")
 	parallel         = flag.Int("parallel", 4, "Number of concurrent channels to open to DynamoDB")
 	readCapacity     = flag.Int("read-capacity", 5, "Average aggregate read capacity to use for scan (set to 0 for unlimited)")
-	region           = flag.String("region", "us-west-2", "AWS Region")
 	silent           = flag.Bool("silent", false, "Don't print progress to stderr")
 	tableName        = flag.String("tablename", "", "DynamoDB table name to dump")
 )
@@ -76,6 +74,7 @@ func fail(format string, a ...interface{}) {
 func usage(err string) {
 	fmt.Fprintf(os.Stderr, "Error: "+err+"\n\nUsage:\n")
 	flag.PrintDefaults()
+	fmt.Fprintln(os.Stderr, "\nSpecify AWS_REGION, AWS_ACCESS_KEY and AWS_SECRET_KEY environment variables as required")
 	os.Exit(101)
 }
 
@@ -90,11 +89,6 @@ func main() {
 	}
 	if *readCapacity < 0 {
 		usage("Invalid value for -read-capacity")
-	}
-
-	config := &aws.Config{
-		Credentials: credentials.NewEnvCredentials(),
-		Region:      aws.String(*region),
 	}
 
 	var out io.Writer = os.Stdout
@@ -117,7 +111,7 @@ func main() {
 	}
 
 	f := dyndump.Fetcher{
-		Dyn:            dynamodb.New(config),
+		Dyn:            dynamodb.New(session.New()),
 		TableName:      *tableName,
 		ConsistentRead: *consistentRead,
 		MaxParallel:    *parallel,
