@@ -1,4 +1,4 @@
-// Copyright 2015 Gareth Watts
+// Copyright 2016 Gareth Watts
 // Licensed under an MIT license
 // See the LICENSE file for details
 
@@ -20,7 +20,7 @@ supported types:
 * binary
 * binary-set
 * bool
-*list
+* list
 * map
 * number
 * number-set
@@ -44,14 +44,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/cheggaaa/pb"
 	"github.com/gwatts/dyndump/dyndump"
 )
 
 const (
-	maxParallel    = 1000
-	statsFrequency = 2 * time.Second
+	maxParallel      = 1000
+	statsFrequency   = 2 * time.Second
+	defaultSliceSize = 10 * 1024 * 1024 // 10MB
 )
 
 var (
@@ -59,11 +63,15 @@ var (
 	includeTypes     = flag.Bool("typed", true, "Include type names in JSON output")
 	maxItems         = flag.Int64("maxitems", 0, "Maximum number of items to read.  Set to 0 to read all items")
 	numbersAsStrings = flag.Bool("string-nums", false, "Output numbers as exact value strings instead of converting")
-	outFilename      = flag.String("target", "-", "Filename to write data to.  Defaults to stdout")
+	outFilename      = flag.String("target", "-", "Filename to write data to.  Defaults to stdout unless bucket is set")
 	parallel         = flag.Int("parallel", 4, "Number of concurrent channels to open to DynamoDB")
 	readCapacity     = flag.Int("read-capacity", 5, "Average aggregate read capacity to use for scan (set to 0 for unlimited)")
 	silent           = flag.Bool("silent", false, "Don't print progress to stderr")
 	tableName        = flag.String("tablename", "", "DynamoDB table name to dump")
+
+	// s3 settings
+	bucket   = flag.String("s3-bucket", "", "S3 bucket to upload data to")
+	s3prefix = flag.String("s3-prefix", "", "Path prefix to use to store data in S3 (eg. backups/2016-04-01-12:25-")
 )
 
 func fail(format string, a ...interface{}) {
@@ -78,9 +86,64 @@ func usage(err string) {
 	os.Exit(101)
 }
 
-func main() {
-	flag.Parse()
+type writers struct {
+	io.Writer
+	fileWriter io.WriteCloser
+	s3Writer   *dyndump.S3Writer
+	s3RunErr   chan error
+}
 
+func (w *writers) Close() error {
+	if w.fileWriter != nil {
+		if w, ok := w.Writer.(io.Closer); ok {
+			w.Close()
+		}
+	}
+	if w.s3Writer != nil {
+		if err := w.s3Writer.Close(); err != nil {
+			return err
+		}
+		return <-w.s3RunErr
+	}
+	return nil
+}
+
+func openWriters() io.WriteCloser {
+	var fout io.Writer = os.Stdout
+	ws := new(writers)
+
+	if *outFilename != "" && *outFilename != "-" {
+		var err error
+		fout, err = os.Create(*outFilename)
+		if err != nil {
+			fail("Failed to open file for write: %s", err)
+		}
+	}
+
+	if *bucket != "" {
+		if *s3prefix == "" {
+			usage("s3prefix not set")
+		}
+		ws.s3Writer = dyndump.NewS3Writer(s3.New(session.New()), *bucket, *s3prefix)
+		ws.s3Writer.MaxParallel = *parallel // match fetcher parallism
+		ws.s3RunErr = make(chan error)
+		if fout != os.Stdout {
+			// stream to both
+			ws.Writer = io.MultiWriter(fout, ws.s3Writer)
+		} else {
+			ws.Writer = ws.s3Writer
+		}
+		go func() { ws.s3RunErr <- ws.s3Writer.Run() }()
+		return ws
+	}
+
+	// no s3
+	ws.Writer = fout
+	return ws
+}
+
+func checkFlags() {
+	flag.Parse()
 	if *tableName == "" {
 		usage("No tablename supplied")
 	}
@@ -90,28 +153,41 @@ func main() {
 	if *readCapacity < 0 {
 		usage("Invalid value for -read-capacity")
 	}
+}
 
-	var out io.Writer = os.Stdout
-	if *outFilename != "" && *outFilename != "-" {
-		var err error
-		out, err = os.Create(*outFilename)
-		if err != nil {
-			fail("Failed to open file for write: %s", err)
-		}
+func getTableInfo(dyn *dynamodb.DynamoDB, tableName string) (*dynamodb.TableDescription, error) {
+	resp, err := dyn.DescribeTable(&dynamodb.DescribeTableInput{
+		TableName: aws.String(tableName),
+	})
+	if err != nil {
+		return nil, err
 	}
+	return resp.Table, nil
+}
+
+func main() {
+	checkFlags()
 
 	sigchan := make(chan os.Signal, 1)
 	signal.Notify(sigchan, syscall.SIGTERM, syscall.SIGKILL, syscall.SIGINT)
 
+	dyn := dynamodb.New(session.New())
+	tableInfo, err := getTableInfo(dyn, *tableName)
+	if err != nil {
+		fail("Failed to get table information: %v", err)
+	}
+
+	out := openWriters()
 	writer := dyndump.NewJSONItemEncoder(out, *includeTypes, *numbersAsStrings)
 
 	if !*silent {
-		fmt.Fprintf(os.Stderr, "Beginning scan: table=%q readCapacity=%d parallel=%d\n",
-			*tableName, *readCapacity, *parallel)
+		fmt.Fprintf(os.Stderr, "Beginning scan: table=%q readCapacity=%d parallel=%d itemCount=%d totalSize=%s\n",
+			*tableName, *readCapacity, *parallel,
+			aws.Int64Value(tableInfo.ItemCount), fmtBytes(aws.Int64Value(tableInfo.TableSizeBytes)))
 	}
 
 	f := dyndump.Fetcher{
-		Dyn:            dynamodb.New(session.New()),
+		Dyn:            dyn,
 		TableName:      *tableName,
 		ConsistentRead: *consistentRead,
 		MaxParallel:    *parallel,
@@ -133,22 +209,29 @@ func main() {
 
 	lastTime := time.Now()
 	startTime := lastTime
-	var lastStats dyndump.Stats
+
+	var bar *pb.ProgressBar
+	if !*silent {
+		bar = pb.New64(aws.Int64Value(tableInfo.TableSizeBytes))
+		bar = pb.New64(0)
+		bar.ShowSpeed = true
+		bar.ManualUpdate = true
+		bar.SetUnits(pb.U_BYTES)
+		bar.SetMaxWidth(78)
+		bar.Start()
+		bar.Update()
+	}
 
 LOOP:
 	for {
 		select {
 		case <-ticker:
-			deltaTime := time.Since(lastTime)
-			lastTime = time.Now()
 			stats := f.Stats()
-			itemsDelta := float64(stats.ItemsRead-lastStats.ItemsRead) / float64(deltaTime/time.Second)
-			capacityDelta := (stats.CapacityUsed - lastStats.CapacityUsed) / float64(deltaTime/time.Second)
-			lastStats = stats
-			fmt.Fprintf(os.Stderr, "Total items: %-10d Items/sec: %-10.1f  Capacity: %-6.1f\n",
-				stats.ItemsRead, itemsDelta, capacityDelta)
+			bar.Set64(stats.BytesRead)
+			bar.Update()
 
 		case <-sigchan:
+			bar.Finish()
 			fmt.Fprintf(os.Stderr, "\nAborting..")
 			f.Stop()
 			<-doneChan
@@ -157,10 +240,18 @@ LOOP:
 
 		case err := <-doneChan:
 			if err != nil {
-				fail("Processing failed: %s", err)
+				fail("Processing failed: %v", err)
 			}
 			break LOOP
 		}
+	}
+	if bar != nil {
+		bar.Finish()
+	}
+
+	// close the output writers and wait for errors
+	if err := out.Close(); err != nil {
+		fail("Failed to write output: %v", err)
 	}
 
 	finalStats := f.Stats()

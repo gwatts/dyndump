@@ -1,4 +1,4 @@
-// Copyright 2015 Gareth Watts
+// Copyright 2016 Gareth Watts
 // Licensed under an MIT license
 // See the LICENSE file for details
 
@@ -11,17 +11,17 @@ with rate limiting to a specific read capacity.
 
 Items are written to an ItemWriter interface until the table is exhausted,
 or the Stop method is called.
+
+It also provides an S3Writer type that can be passed to a Fetcher to stream
+received data to an S3 bucket.
 */
 package dyndump
 
 import (
 	"fmt"
 	"math"
-	"time"
-
-	"sort"
-	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
@@ -30,18 +30,26 @@ import (
 
 var (
 	limitCalcSize = 50 // number of item sizes to collect when calculating an average
+	initialLimit  = 20 // Iniital number of items to request when size is unknown
 )
 
 // Stats is returned by Fetcher.Stats to return current global throughput statistics.
 type Stats struct {
 	ItemsRead    int64
+	BytesRead    int64
 	CapacityUsed float64
+}
+
+// DynScanner defines the portion of the dynamodb service
+// that Fetcher requires.
+type DynScanner interface {
+	Scan(input *dynamodb.ScanInput) (*dynamodb.ScanOutput, error)
 }
 
 // Fetcher fetches data from DynamoDB at a specified capacity and writes
 // fetched items to a writer implementing the ItemWriter interface.
 type Fetcher struct {
-	Dyn            *dynamodb.DynamoDB
+	Dyn            DynScanner
 	TableName      string
 	ConsistentRead bool       // Setting to true will use double the read capacity.
 	MaxParallel    int        // Maximum number of parallel requests to make to Dynamo.
@@ -51,6 +59,7 @@ type Fetcher struct {
 
 	rateLimit    *ratelimit.Bucket
 	itemsRead    int64
+	bytesRead    int64
 	capacityUsed int64 // multiplied by 10
 	stopRequest  chan struct{}
 	stopNotify   chan struct{}
@@ -103,6 +112,7 @@ func (f *Fetcher) Stop() {
 func (f *Fetcher) Stats() Stats {
 	return Stats{
 		ItemsRead:    atomic.LoadInt64(&f.itemsRead),
+		BytesRead:    atomic.LoadInt64(&f.bytesRead),
 		CapacityUsed: float64(atomic.LoadInt64(&f.capacityUsed)) / 10,
 	}
 }
@@ -134,9 +144,9 @@ func (f *Fetcher) waitForRateLimit(usedCapacity int64) bool {
 // process a single segment.  executed in a separate goroutine by Run
 // for parallel scans.
 func (f *Fetcher) processSegment(segNum int64, doneChan chan<- error) {
-	limit := aws.Int64(20) // slow start
+	limit := aws.Int64(int64(initialLimit)) // slow start
 	if f.rateLimit == nil {
-		limit = aws.Int64(0) // unlimit
+		limit = aws.Int64(0) // unlimited
 	}
 
 	params := &dynamodb.ScanInput{
@@ -168,18 +178,19 @@ func (f *Fetcher) processSegment(segNum int64, doneChan chan<- error) {
 			return
 		}
 
-		respSize := 0
+		var respSize int64
 		for _, item := range resp.Items {
 			if err := f.Writer.WriteItem(item); err != nil {
 				doneChan <- fmt.Errorf("write failed: %s", err)
 				return
 			}
 			itemSize := calcItemSize(item)
-			respSize += itemSize
+			respSize += int64(itemSize)
 			f.limitCalc.addSize(itemSize)
 		}
 
 		atomic.AddInt64(&f.itemsRead, int64(len(resp.Items)))
+		atomic.AddInt64(&f.bytesRead, respSize)
 		atomic.AddInt64(&f.capacityUsed, int64(*resp.ConsumedCapacity.CapacityUnits*10))
 		if f.MaxItems > 0 && atomic.LoadInt64(&f.itemsRead) >= f.MaxItems {
 			break
@@ -223,91 +234,4 @@ func (f *Fetcher) calcLimit() (newLimit int) {
 	}
 
 	return newLimit
-}
-
-// this is based on https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/WorkingWithTables.html#ItemSizeCalculations
-func calcItemSize(item map[string]*dynamodb.AttributeValue) (size int) {
-	for k, av := range item {
-		size += len(k)
-		size += calcAttrSize(av)
-	}
-	return size
-}
-
-func calcAttrSize(av *dynamodb.AttributeValue) (size int) {
-	switch {
-	case av.B != nil: // binary
-		size += len(av.B)
-
-	case av.BOOL != nil: // Bool
-		size++
-
-	case av.BS != nil: // binary set
-		size += 3
-		for _, v := range av.BS {
-			size += len(v)
-		}
-
-	case av.L != nil: // list of attributes
-		size += 3
-		for _, v := range av.L {
-			size += calcAttrSize(v)
-		}
-
-	case av.M != nil: // map of attributes
-		size += 3
-		for k, v := range av.M {
-			size += len(k) + calcAttrSize(v)
-		}
-
-	case av.N != nil: // number
-		size += len(*av.N)
-
-	case av.NS != nil: // number set
-		size += 3
-		for _, v := range av.NS {
-			size += len(*v)
-		}
-
-	case av.NULL != nil: // null
-		size++
-
-	case av.S != nil: // string
-		size += len(*av.S)
-
-	case av.SS != nil: // string set
-		size += 3
-		for _, v := range av.SS {
-			size += len(*v)
-		}
-	}
-	return size
-}
-
-// track recent sizes of items
-type limitCalc struct {
-	m         sync.Mutex
-	itemSizes []int
-	offset    int64
-}
-
-func newLimitCalc(size int) *limitCalc {
-	return &limitCalc{itemSizes: make([]int, size)}
-}
-
-func (lc *limitCalc) addSize(size int) {
-	lc.m.Lock()
-	defer lc.m.Unlock()
-	lc.itemSizes[lc.offset%int64(len(lc.itemSizes))] = size
-	lc.offset++
-}
-
-func (lc *limitCalc) median() int {
-	lc.m.Lock()
-	defer lc.m.Unlock()
-	if lc.offset < int64(len(lc.itemSizes)) {
-		return -1
-	}
-	sort.Ints(lc.itemSizes)
-	return lc.itemSizes[len(lc.itemSizes)/2] // close enough to median
 }
