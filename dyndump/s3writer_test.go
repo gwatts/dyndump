@@ -26,12 +26,12 @@ func TestS3NewKey(t *testing.T) {
 	}
 
 	k := w.newKey()
-	if expected := "aprefix-000000001.json.gz"; k != expected {
+	if expected := "aprefix-part-000000001.json.gz"; k != expected {
 		t.Errorf("expected=%q actual=%q", expected, k)
 	}
 
 	k = w.newKey()
-	if expected := "aprefix-000000002.json.gz"; k != expected {
+	if expected := "aprefix-part-000000002.json.gz"; k != expected {
 		t.Errorf("expected=%q actual=%q", expected, k)
 	}
 }
@@ -41,10 +41,11 @@ func TestS3NewKey(t *testing.T) {
 // As this sets MaxParallel > 1 it should test for races too when the race
 // detector is on.
 func TestS3OK(t *testing.T) {
-	const chunkSize = minSliceSize
+	const chunkSize = MinPartSize
 	fs3 := newFakeS3()
-	w := NewS3Writer(fs3, "test-bucket", "test-prefix")
-	w.SliceSize = minSliceSize
+	var md Metadata
+	w := NewS3Writer(fs3, "test-bucket", "test-prefix", md)
+	w.PartSize = chunkSize * 16 // Ensure multiple writes per part, multiple parts overall
 
 	done := make(chan error)
 	go func() {
@@ -52,8 +53,8 @@ func TestS3OK(t *testing.T) {
 	}()
 
 	for i := 0; i < 256; i++ {
-		// Write a block of 50 random bytes, prefixed with the seed number
-		// used to generate the random data
+		// Write a block of random bytes, prefixed with the seed number
+		// used to generate the pseudo random data
 		rnd := append([]byte{byte(i)}, randbytes(i, chunkSize)...)
 		if _, err := w.Write(rnd); err != nil {
 			t.Fatalf("Write %d failed: %v", i, err)
@@ -115,14 +116,18 @@ func TestS3OK(t *testing.T) {
 
 // Test that a hard put failure results in the writer shutting down
 func TestS3PutFail(t *testing.T) {
+	var md Metadata
 	const chunkSize = 500
 	var failError = errors.New("Failed")
 	s3 := fakePutObject(func(input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+		if k := aws.StringValue(input.Key); strings.Contains(k, "meta.json") {
+			return nil, nil // let puts for metadata succeed
+		}
 		return nil, failError
 	})
 
-	w := NewS3Writer(s3, "test-bucket", "test-prefix")
-	w.SliceSize = minSliceSize
+	w := NewS3Writer(s3, "test-bucket", "test-prefix", md)
+	w.PartSize = MinPartSize
 
 	done := make(chan error)
 	go func() {
@@ -131,11 +136,22 @@ func TestS3PutFail(t *testing.T) {
 
 	// Run writes until we get a fail
 	var err error
-	for i := 0; i < 100; i++ {
-		if _, err = w.Write(randbytes(i, chunkSize)); err != nil {
-			break
+	errch := make(chan error)
+	go func() {
+		for i := 0; i < 100; i++ {
+			if _, err = w.Write(randbytes(i, chunkSize)); err != nil {
+				errch <- err
+				return
+			}
 		}
+	}()
+
+	select {
+	case err = <-errch:
+	case err := <-done:
+		t.Fatal("Run exited unexpectedly", err)
 	}
+
 	if err == nil {
 		t.Fatal("No error received from write")
 	}
@@ -167,8 +183,9 @@ type putdata struct {
 }
 
 type fakeS3 struct {
-	m     sync.Mutex
-	parts map[string]putdata
+	m        sync.Mutex
+	metadata []byte
+	parts    map[string]putdata
 }
 
 func newFakeS3() *fakeS3 {
@@ -179,25 +196,35 @@ func (fs3 *fakeS3) PutObject(input *s3.PutObjectInput) (*s3.PutObjectOutput, err
 	k := aws.StringValue(input.Key)
 	bucket := aws.StringValue(input.Bucket)
 
-	// gunzip the data and store that
-	gzr, err := gzip.NewReader(input.Body)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to gunzip key %s: %v", input.Key, err)
-	}
+	if strings.HasSuffix(k, "meta.json") {
+		data, err := ioutil.ReadAll(input.Body)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to read body for key %s: %v", k, err)
+		}
+		fs3.m.Lock()
+		fs3.metadata = data
+		fs3.m.Unlock()
+	} else {
+		// gunzip the data and store that
+		gzr, err := gzip.NewReader(input.Body)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to gunzip key %s: %v", k, err)
+		}
 
-	data, err := ioutil.ReadAll(gzr)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to read body for key %s: %v", input.Key, err)
-	}
+		data, err := ioutil.ReadAll(gzr)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to read body for key %s: %v", k, err)
+		}
 
-	fs3.m.Lock()
-	fs3.parts[k] = putdata{
-		data:   data,
-		bucket: bucket,
-		enc:    aws.StringValue(input.ContentEncoding),
-		ctype:  aws.StringValue(input.ContentType),
+		fs3.m.Lock()
+		fs3.parts[k] = putdata{
+			data:   data,
+			bucket: bucket,
+			enc:    aws.StringValue(input.ContentEncoding),
+			ctype:  aws.StringValue(input.ContentType),
+		}
+		fs3.m.Unlock()
 	}
-	fs3.m.Unlock()
 	return nil, nil
 }
 

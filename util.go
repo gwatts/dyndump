@@ -1,6 +1,14 @@
+// Copyright 2016 Gareth Watts
+// Licensed under an MIT license
+// See the LICENSE file for details
+
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"io"
+	"sync/atomic"
+)
 
 const (
 	kib = 1 << 10
@@ -11,6 +19,8 @@ const (
 
 func fmtBytes(bytes int64) string {
 	switch {
+	case bytes < 0:
+		return "unknown"
 	case bytes < kib:
 		return fmt.Sprintf("%d bytes", bytes)
 	case bytes < mib:
@@ -22,4 +32,23 @@ func fmtBytes(bytes int64) string {
 	default:
 		return fmt.Sprintf("%.1f TB", float64(bytes)/tib)
 	}
+}
+
+type readWatcher struct {
+	io.Reader
+	bytesRead int64
+}
+
+func newReadWatcher(r io.Reader) *readWatcher {
+	return &readWatcher{Reader: r}
+}
+
+func (r *readWatcher) Read(p []byte) (n int, err error) {
+	n, err = r.Reader.Read(p)
+	atomic.AddInt64(&r.bytesRead, int64(n))
+	return n, err
+}
+
+func (r *readWatcher) BytesRead() int64 {
+	return atomic.LoadInt64(&r.bytesRead)
 }

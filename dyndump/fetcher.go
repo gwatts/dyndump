@@ -2,19 +2,6 @@
 // Licensed under an MIT license
 // See the LICENSE file for details
 
-/*
-Package dyndump provides a scan-based method for dumping an entire DynamoDB
-table using scan.
-
-It supports parallel connections to the server for increased throughput along
-with rate limiting to a specific read capacity.
-
-Items are written to an ItemWriter interface until the table is exhausted,
-or the Stop method is called.
-
-It also provides an S3Writer type that can be passed to a Fetcher to stream
-received data to an S3 bucket.
-*/
 package dyndump
 
 import (
@@ -33,17 +20,23 @@ var (
 	initialLimit  = 20 // Iniital number of items to request when size is unknown
 )
 
-// Stats is returned by Fetcher.Stats to return current global throughput statistics.
-type Stats struct {
-	ItemsRead    int64
-	BytesRead    int64
-	CapacityUsed float64
+// ItemWriter is the interface expected by a Fetcher when writing retrieved
+// DynamoDB items.  Must support writes from concurrent goroutines.
+type ItemWriter interface {
+	WriteItem(item map[string]*dynamodb.AttributeValue) error
 }
 
 // DynScanner defines the portion of the dynamodb service
 // that Fetcher requires.
 type DynScanner interface {
 	Scan(input *dynamodb.ScanInput) (*dynamodb.ScanOutput, error)
+}
+
+// FetcherStats is returned by Fetcher.Stats to return current global throughput statistics.
+type FetcherStats struct {
+	ItemsRead    int64
+	BytesRead    int64
+	CapacityUsed float64
 }
 
 // Fetcher fetches data from DynamoDB at a specified capacity and writes
@@ -109,8 +102,8 @@ func (f *Fetcher) Stop() {
 
 // Stats returns current aggregate statistics about an ongoing or completed run.
 // It is safe to call from concurrent goroutines.
-func (f *Fetcher) Stats() Stats {
-	return Stats{
+func (f *Fetcher) Stats() FetcherStats {
+	return FetcherStats{
 		ItemsRead:    atomic.LoadInt64(&f.itemsRead),
 		BytesRead:    atomic.LoadInt64(&f.bytesRead),
 		CapacityUsed: float64(atomic.LoadInt64(&f.capacityUsed)) / 10,

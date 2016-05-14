@@ -7,50 +7,81 @@ package dyndump
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/ioutil"
+	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 )
 
 const (
-	defaultSliceSize   = 10 * 1024 * 1024
-	defaultMaxParallel = 2
-	minSliceSize       = 1000
+	// DefaultPartSize sets the default maximum size of objects sent to S3.
+	DefaultPartSize = 50 * 1024 * 1024 // 50 MiB
+
+	// DefaultS3MaxParallel sets the default maximum number of concurrent
+	// write requests for S3.
+	DefaultS3MaxParallel = 2
+
+	// MinPartSize defines the minimum value that can be used for PartSize.
+	MinPartSize = 1000
 )
 
-// S3 defines the portion of the s3 service that S3Writer requires
-type S3 interface {
+// S3Puter defines the portion of the S3 service required by S3Writer.
+type S3Puter interface {
 	PutObject(input *s3.PutObjectInput) (*s3.PutObjectOutput, error)
 }
 
 // S3Writer takes a stream of JSON data and uploads it
-// in parallel to multiple S3 objects.
+// in parallel to S3.
+//
+// It divides the stream into multiple pieces which store a maximum of
+// approximately PartSize bytes each.
+//
+// Each part is given a key name beginning with PathPrefix and also uploads
+// a metadata file on completion which summarizes the table.
 type S3Writer struct {
-	S3          S3
-	Bucket      string
-	PathPrefix  string
-	SliceSize   int // number of bytes to store each slice
-	MaxParallel int // Maximum number of parallel uploads to perform to S3
+	S3          S3Puter
+	Bucket      string // S3 bucket name to upload to
+	PathPrefix  string // Prefix to apply to each part of the backup
+	PartSize    int    // number of bytes to store each part
+	MaxParallel int    // Maximum number of parallel uploads to perform to S3
 
-	partnum int32
-	data    chan []byte // workers read from this channel
-	wg      sync.WaitGroup
-	fm      sync.Mutex
-	failed  error
+	md              Metadata
+	partnum         int32
+	rawBytes        int64
+	compressedBytes int64
+	writeCount      int64
+	data            chan []byte // workers read from this channel
+	wg              sync.WaitGroup
+	fm              sync.Mutex
+	failed          error
+	mm              sync.Mutex // metadata mutex
 }
 
-// NewS3Writer creates and initalizes a new S3Writer
-func NewS3Writer(s3 S3, bucket, pathPrefix string) *S3Writer {
+// NewS3Writer creates and initializes a new S3Writer
+func NewS3Writer(s3 S3Puter, bucket, pathPrefix string, metadata Metadata) *S3Writer {
+	metadata.Status = StatusRunning
+	metadata.Type = BackupFull
+	metadata.StartTime = time.Now()
+	metadata.EndTime = nil
+	metadata.PartCount = 0
+	metadata.UncompressedBytes = 0
+	metadata.CompressedBytes = 0
+	metadata.ItemCount = 0
+
 	return &S3Writer{
 		S3:          s3,
 		Bucket:      bucket,
 		PathPrefix:  pathPrefix,
-		SliceSize:   defaultSliceSize,
-		MaxParallel: defaultMaxParallel,
+		PartSize:    DefaultPartSize,
+		MaxParallel: DefaultS3MaxParallel,
+		md:          metadata,
 		data:        make(chan []byte),
 	}
 }
@@ -60,21 +91,33 @@ func (w *S3Writer) Run() error {
 	if w.data == nil {
 		w.data = make(chan []byte)
 	}
-	if w.SliceSize < minSliceSize {
-		return errors.New("SliceSize too small")
+	if w.PartSize < MinPartSize {
+		return errors.New("PartSize too small")
 	}
 	if w.MaxParallel < 1 {
 		return errors.New("MaxParallel must be 1 or greater")
+	}
+	if err := w.flushMetadata(); err != nil {
+		return err
 	}
 	for i := 0; i < w.MaxParallel; i++ {
 		w.wg.Add(1)
 		go w.worker()
 	}
 	w.wg.Wait()
-	return w.failError()
+	now := time.Now()
+	w.md.EndTime = &now
+	if err := w.failError(); err != nil {
+		w.md.Status = StatusFailed
+		w.flushMetadata()
+		return err
+	}
+
+	w.md.Status = StatusCompleted
+	return w.flushMetadata()
 }
 
-// Write takes a single block of JSON text and sends it off to S3.
+// Write takes a single block of JSON text and sends it to S3.
 // It will return an error if a Put to S3 has failed.
 func (w *S3Writer) Write(p []byte) (n int, err error) {
 	if err := w.failError(); err != nil {
@@ -93,10 +136,42 @@ func (w *S3Writer) Close() error {
 	return w.failed
 }
 
+// Abort closes the writer and marks the metadata state as failed
+func (w *S3Writer) Abort() error {
+	w.fail(errors.New("aborted"))
+	return w.Close()
+}
+
+func (w *S3Writer) completePart(deltaRaw, deltaCompressed, deltaItems int64) error {
+	w.mm.Lock()
+	defer w.mm.Unlock()
+
+	w.md.UncompressedBytes += deltaRaw
+	w.md.CompressedBytes += deltaCompressed
+	w.md.ItemCount += deltaItems
+	w.md.PartCount++
+	return w.flushMetadata()
+}
+
+func (w *S3Writer) flushMetadata() error {
+	data, err := json.MarshalIndent(w.md, "", "  ")
+	if err != nil {
+		return err
+	}
+	req := &s3.PutObjectInput{
+		Bucket:      aws.String(w.Bucket),
+		Key:         aws.String(s3MetaKey(w.PathPrefix)),
+		Body:        bytes.NewReader(data),
+		ContentType: aws.String("application/json"),
+	}
+	_, err = w.S3.PutObject(req)
+	return err
+}
+
 // newKey generates the next S3 object key.
 func (w *S3Writer) newKey() string {
 	pn := atomic.AddInt32(&w.partnum, 1)
-	return fmt.Sprintf("%s-%09d.json.gz", w.PathPrefix, pn)
+	return fmt.Sprintf("%s%09d.json.gz", s3PartPrefix(w.PathPrefix), pn)
 }
 
 // fail sets the failure error, if not already set
@@ -118,25 +193,32 @@ func (w *S3Writer) failError() error {
 
 func (w *S3Writer) worker() {
 	var failed bool
+	var rawPendingLen int64
+	var writeCount int64
 
 	defer w.wg.Done()
 
-	// pre-allocate space
-	buf := bytes.NewBuffer(make([]byte, w.SliceSize))
-	buf.Reset()
+	tmpfile, err := ioutil.TempFile("", "dyndump")
+	if err != nil {
+		w.fail(err)
+		return
+	}
+	defer os.Remove(tmpfile.Name())
 
-	gz := gzip.NewWriter(buf)
+	gz := gzip.NewWriter(tmpfile)
 
 	flush := func() error {
 		if err := w.failError(); err != nil {
-			failed = true
-			return err
+			failed = true // complete final flush
 		}
 		gz.Close()
+		fsize, _ := tmpfile.Seek(0, 1)
+		tmpfile.Seek(0, 0)
+
 		req := &s3.PutObjectInput{
 			Bucket:          aws.String(w.Bucket),
 			Key:             aws.String(w.newKey()),
-			Body:            bytes.NewReader(buf.Bytes()),
+			Body:            tmpfile,
 			ContentEncoding: aws.String("gzip"),
 			ContentType:     aws.String("application/json"),
 		}
@@ -144,24 +226,34 @@ func (w *S3Writer) worker() {
 		if err != nil {
 			return err
 		}
-		buf.Reset()
-		gz.Reset(buf)
+
+		if err := w.completePart(rawPendingLen, fsize, writeCount); err != nil {
+			return err
+		}
+
+		rawPendingLen = 0
+		writeCount = 0
+		tmpfile.Truncate(0)
+		tmpfile.Seek(0, 0)
+		gz.Reset(tmpfile)
 		return nil
 	}
 
 	var intervalBytes int
-	gzipFlushInterval := w.SliceSize / 10
+	gzipFlushInterval := w.PartSize / 10
 	for data := range w.data {
 		if failed {
 			continue
 		}
 		gz.Write(data)
+		rawPendingLen += int64(len(data))
+		writeCount++
 		intervalBytes += len(data)
 		if intervalBytes >= gzipFlushInterval {
 			gz.Flush() // Flush to get a sense of how much data is buffered
 			intervalBytes = 0
 		}
-		if buf.Len() >= w.SliceSize {
+		if fsize, _ := tmpfile.Seek(0, 1); fsize >= int64(w.PartSize) {
 			if err := flush(); err != nil {
 				w.fail(err)
 				failed = true
@@ -169,9 +261,16 @@ func (w *S3Writer) worker() {
 		}
 	}
 
-	if intervalBytes > 0 && !failed {
+	if rawPendingLen > 0 && !failed {
 		if err := flush(); err != nil {
 			w.fail(err)
 		}
 	}
+}
+
+func s3MetaKey(prefix string) string {
+	return prefix + "-meta.json"
+}
+func s3PartPrefix(prefix string) string {
+	return prefix + "-part-"
 }

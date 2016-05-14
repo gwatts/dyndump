@@ -7,8 +7,10 @@ package dyndump
 import (
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/aws/aws-sdk-go/service/dynamodb"
+	"github.com/juju/ratelimit"
 )
 
 // this is based on https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/WorkingWithTables.html#ItemSizeCalculations
@@ -96,4 +98,24 @@ func (lc *limitCalc) median() int {
 	}
 	sort.Ints(lc.itemSizes)
 	return lc.itemSizes[len(lc.itemSizes)/2] // close enough to median
+}
+
+type rateLimitWaiter struct {
+	*ratelimit.Bucket
+	stopNotify chan struct{}
+}
+
+// Interruptible rate limit wait
+// Returns true if the stopChan was closed while waiting
+func (w *rateLimitWaiter) waitForRateLimit(usedCapacity int64) bool {
+	d := w.Take(usedCapacity)
+	if d > 0 {
+		select {
+		case <-time.After(d):
+			return false
+		case <-w.stopNotify:
+			return true
+		}
+	}
+	return false
 }
