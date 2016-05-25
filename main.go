@@ -177,7 +177,7 @@ func main() {
 	})
 
 	app.Command("load", "Load a table dump from S3 or file to a DynamoDB table", func(cmd *cli.Cmd) {
-		cmd.Spec = "[-mpw] (--filename | --stdin | (--s3-bucket --s3-prefix)) TABLENAME"
+		cmd.Spec = "[-mpw] [--allow-overwrite] (--filename | --stdin | (--s3-bucket --s3-prefix)) TABLENAME"
 		action := &loader{
 			tableName:      cmd.StringArg("TABLENAME", "", "Table name to load into"),
 			allowOverwrite: cmd.BoolOpt("allow-overwrite", false, "Set to true to overwrite any existing rows"),
