@@ -2,12 +2,18 @@
 // Licensed under an MIT license
 // See the LICENSE file for details
 
-package main
+package cmd
 
 import (
 	"fmt"
 	"io"
+	"os"
 	"sync/atomic"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/gwatts/flagvals"
+	cli "github.com/jawher/mow.cli"
 )
 
 const (
@@ -51,4 +57,18 @@ func (r *readWatcher) Read(p []byte) (n int, err error) {
 
 func (r *readWatcher) BytesRead() int64 {
 	return atomic.LoadInt64(&r.bytesRead)
+}
+
+func fail(format string, a ...interface{}) {
+	fmt.Fprintf(os.Stderr, format+"\n", a...)
+	cli.Exit(100)
+}
+
+func initAWS(maxRetries *flagvals.RangeInt) *session.Session {
+	cfg := aws.NewConfig().WithMaxRetries(int(maxRetries.Value))
+	s, err := session.NewSession(cfg)
+	if err != nil {
+		fail("Failed to create AWS session: %v", err)
+	}
+	return s
 }

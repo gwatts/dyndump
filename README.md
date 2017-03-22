@@ -6,7 +6,7 @@
 This utility performs a full scan of an AWS DynamoDB table and outputs each
 row as a JSON object, storing the dump either on disk or in an S3 bucket.
 
-It supports rate-limiting to a specified average read or write capacity and 
+It supports rate-limiting to a specified average read or write capacity and
 parallel requests to achieve high throughput.
 
 The underlying Go library can also be imported into other projects to provide
@@ -19,8 +19,13 @@ Binaries are available for Linux, Solaris, Windows and Mac for the
 
 ## Compile
 
-[Install Go](https://golang.org/doc/install) and run 
+[Install Go](https://golang.org/doc/install) and run
 `go get github.com/gwatts/dyndump`.
+
+
+## Example
+
+
 
 ## Utility Usage
 
@@ -31,6 +36,17 @@ environment variables, or will be loaded from ~/.aws/credentials or using EC2 me
 * `AWS_ACCESS_KEY_ID`
 * `AWS_SECRET_ACCESS_KEY`
 
+By default, the utility will update the console with dump/restore progress.  To use
+as part of a script with log output to stdout instead, use the `--log` and `--no-progress`
+options:
+
+```
+dyndump dump --no-progress --log=- --filename=dumpfile.json
+```
+
+Most options are also accepted as environment variables; eg. `--s3-bucket` can
+be set using the `S3_BUCKET` environment variable.
+
 The dyndump program supports four commands:
 
 ### Dump
@@ -38,24 +54,26 @@ The dyndump program supports four commands:
 Dumps an entire DynamoDB table to file or an S3 bucket.
 
 ```
-Usage: dyndump dump [--silent] [--no-progress] [-cmpr] [--filename | --stdout] [(--s3-bucket --s3-prefix)] TABLENAME
+Usage: dyndump dump [--silent] [--no-progress] [--log] [-cmpr] [--filename | --stdout] [(--s3-bucket --s3-prefix)] TABLENAME
 
-Dump a table to file or S3
+Dump a table to file and/or S3
 
 Arguments:
   TABLENAME=""   Table name to dump from Dynamo
 
 Options:
-  -c, --consistent-read=false   Enable consistent reads (at 2x capacity use)
-  -f, --filename=""             Filename to write data to.
-  --stdout=false                If true then send the output to stdout
-  -m, --maxitems=0              Maximum number of items to dump.  Set to 0 to process all items
-  -p, --parallel=5              Number of concurrent channels to open to DynamoDB
-  -r, --read-capacity=5         Average aggregate read capacity to use for scan (set to 0 for unlimited)
-  --s3-bucket=""                S3 bucket name to upload to
-  --s3-prefix=""                Path prefix to use to store data in S3 (eg. "backups/2016-04-01-12:25-")
-  --silent=false                Set to true to disable all non-error output
-  --no-progress=false           Set to true to disable the progress bar
+  -c, --consistent-read=false   Enable consistent reads (at 2x capacity use) ($USE_CONSISTENT)
+  -f, --filename=""             Filename to write data to.  May be combined with --s3-* to store in both locations. ($FILENAME)
+  --stdout=false                If true then send the output to stdout ($USE_STDOUT)
+  --s3-bucket=""                S3 bucket name to upload to.  May be combined with --filename to store in both locations ($S3_BUCKET)
+  --s3-prefix=""                Path prefix to use to store data in S3 (eg. "backups/2016-04-01-12:25-") ($S3_PREFIX)
+  -m, --maxitems=0              Maximum number of items to dump.  Set to 0 to process all items in the table ($MAXITEMS)
+  -p, --parallel=5              Number of concurrent channels to open to DynamoDB ($MAX_PARALLEL)
+  -r, --read-capacity=5         Average aggregate read capacity to use for scan (set to 0 for unlimited) ($READ_CAPACITY)
+  --max-retries=10              Maximum number of retry attempts to make with AWS services before failing ($AWS_MAX_RETRIES)
+  --silent=false                Set to true to disable all non-error and non-log output ($SILENT)
+  --no-progress=false           Set to true to disable the progress bar ($NO_PROGRESS)
+  --log=""                      Set to a filename or --log=- for stdout; defaults to no log output ($LOG_TARGET)
 ```
 
 ### Load
@@ -63,8 +81,7 @@ Options:
 Loads a previous dump from file or S3 into an existing DynamoDB table
 
 ```
-
-Usage: dyndump load [--silent] [--no-progress] [-mpw] (--filename | --stdin | (--s3-bucket --s3-prefix)) TABLENAME
+Usage: dyndump load [--silent] [--no-progress] [--log] [-mpw] [--allow-overwrite] (--filename | --stdin | (--s3-bucket --s3-prefix)) TABLENAME
 
 Load a table dump from S3 or file to a DynamoDB table
 
@@ -72,16 +89,18 @@ Arguments:
   TABLENAME=""   Table name to load into
 
 Options:
-  --allow-overwrite=false   Set to true to overwrite any existing rows
-  -f, --filename=""         Filename to read data from.  Set to "-" for stdin
-  --stdin=false             If true then read the dump data from stdin
-  -m, --maxitems=0          Maximum number of items to load.  Set to 0 to process all items
-  -p, --parallel=4          Number of concurrent channels to open to DynamoDB
-  -w, --write-capacity=5    Average aggregate write capacity to use for load (set to 0 for unlimited)
-  --s3-bucket=""            S3 bucket name to read from
-  --s3-prefix=""            Path prefix to use to read data from S3 (eg. "backups/2016-04-01-12:25-")
-  --silent=false            Set to true to disable all non-error output
-  --no-progress=false       Set to true to disable the progress bar
+  --allow-overwrite=false   Set to true to overwrite any existing rows ($ALLOW_OVERWRITE)
+  -f, --filename=""         Filename to read data from.  Set to "-" for stdin ($FILENAME)
+  --stdin=false             If true then read the dump data from stdin ($USE_STDIN)
+  --s3-bucket=""            S3 bucket name to read from ($S3_BUCKET)
+  --s3-prefix=""            Path prefix to use to read data from S3 (eg. "backups/2016-04-01-12:25-") ($S3_PREFIX)
+  -m, --maxitems=0          Maximum number of items to load.  Set to 0 to process all items in the table ($MAXITEMS)
+  -p, --parallel=5          Number of concurrent channels to open to DynamoDB ($MAX_PARALLEL)
+  -w, --write-capacity=5    Average aggregate read capacity to use for load (set to 0 for unlimited) ($WRITE_CAPACITY)
+  --max-retries=10          Maximum number of retry attempts to make with AWS services before failing ($AWS_MAX_RETRIES)
+  --silent=false            Set to true to disable all non-error and non-log output ($SILENT)
+  --no-progress=false       Set to true to disable the progress bar ($NO_PROGRESS)
+  --log=""                  Set to a filename or --log=- for stdout; defaults to no log output ($LOG_TARGET)
 ```
 
 ### Info
@@ -94,8 +113,9 @@ Usage: dyndump info --s3-bucket --s3-prefix
 Display backup metadata from an S3 backup
 
 Options:
-  --s3-bucket=""   S3 bucket name to read from
-  --s3-prefix=""   Path prefix to use to read data from S3 (eg. "backups/2016-04-01-12:25-")
+  --s3-bucket=""     S3 bucket name to read from ($S3_BUCKET)
+  --s3-prefix=""     Path prefix to use to read data from S3 (eg. "backups/2016-04-01-12:25-") ($S3_PREFIX)
+  --max-retries=10   Maximum number of retry attempts to make with AWS services before failing ($AWS_MAX_RETRIES)
 ```
 
 ### Delete
@@ -103,17 +123,18 @@ Options:
 Deletes an entire dump from S3 matching a specified prefix.
 
 ```
-
-Usage: dyndump delete [--silent] [--no-progress] --s3-bucket --s3-prefix [--force]
+Usage: dyndump delete [--silent] [--no-progress] [--log] --s3-bucket --s3-prefix [--force]
 
 Delete a backup from S3
 
 Options:
-  --s3-bucket=""        S3 bucket name to delete from
-  --s3-prefix=""        Path prefix to use to delete from S3 (eg. "backups/2016-04-01-12:25-")
-  --force=false         Set to true to disable the delete prompt
-  --silent=false        Set to true to disable all non-error output
-  --no-progress=false   Set to true to disable the progress bar
+  --s3-bucket=""        S3 bucket name to delete from ($S3_BUCKET)
+  --s3-prefix=""        Path prefix to use to delete data from S3 (eg. "backups/2016-04-01-12:25-") ($S3_PREFIX)
+  --force=false         Set to true to disable the delete prompt ($NO_DELETE_PROMPT)
+  --max-retries=10      Maximum number of retry attempts to make with AWS services before failing ($AWS_MAX_RETRIES)
+  --silent=false        Set to true to disable all non-error and non-log output ($SILENT)
+  --no-progress=false   Set to true to disable the progress bar ($NO_PROGRESS)
+  --log=""              Set to a filename or --log=- for stdout; defaults to no log output ($LOG_TARGET)
 ```
 
 

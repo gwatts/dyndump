@@ -11,7 +11,7 @@ limiting to a specified read or write capacity.
 
 JSON is emitted as a stream of objects, one per item in the canonical format
 used by the DynamoDB API.  Each object has a key for each field name with a
-value object holding the type and field value.  Eg
+value object holding the type and field value.  e.g.
 
   {
 	  "string-field": {"S": "string value"},
@@ -47,178 +47,95 @@ dyndump supports four commands:
 
 DUMP
 
-  Usage: dyndump dump [--silent] [--no-progress] [-cmpr] [--filename | --stdout] [(--s3-bucket --s3-prefix)] TABLENAME
+Usage: dyndump dump [--silent] [--no-progress] [--log] [-cmpr] [--filename | --stdout] [(--s3-bucket --s3-prefix)] TABLENAME
 
-  Dump a table to file or S3
+Dump a table to file and/or S3
 
-  Arguments:
-    TABLENAME=""   Table name to dump from Dynamo
+Arguments:
+  TABLENAME=""   Table name to dump from Dynamo
 
-  Options:
-    -c, --consistent-read=false   Enable consistent reads (at 2x capacity use)
-    -f, --filename=""             Filename to write data to.
-    --stdout=false                If true then send the output to stdout
-    -m, --maxitems=0              Maximum number of items to dump.  Set to 0 to process all items
-    -p, --parallel=5              Number of concurrent channels to open to DynamoDB
-    -r, --read-capacity=5         Average aggregate read capacity to use for scan (set to 0 for unlimited)
-    --s3-bucket=""                S3 bucket name to upload to
-    --s3-prefix=""                Path prefix to use to store data in S3 (eg. "backups/2016-04-01-12:25-")
-    --silent=false                Set to true to disable all non-error output
-    --no-progress=false           Set to true to disable the progress bar
+Options:
+  -c, --consistent-read=false   Enable consistent reads (at 2x capacity use) ($USE_CONSISTENT)
+  -f, --filename=""             Filename to write data to.  May be combined with --s3-* to store in both locations. ($FILENAME)
+  --stdout=false                If true then send the output to stdout ($USE_STDOUT)
+  --s3-bucket=""                S3 bucket name to upload to.  May be combined with --filename to store in both locations ($S3_BUCKET)
+  --s3-prefix=""                Path prefix to use to store data in S3 (eg. "backups/2016-04-01-12:25-") ($S3_PREFIX)
+  -m, --maxitems=0              Maximum number of items to dump.  Set to 0 to process all items in the table ($MAXITEMS)
+  -p, --parallel=5              Number of concurrent channels to open to DynamoDB ($MAX_PARALLEL)
+  -r, --read-capacity=5         Average aggregate read capacity to use for scan (set to 0 for unlimited) ($READ_CAPACITY)
+  --max-retries=10              Maximum number of retry attempts to make with AWS services before failing ($AWS_MAX_RETRIES)
+  --silent=false                Set to true to disable all non-error and non-log output ($SILENT)
+  --no-progress=false           Set to true to disable the progress bar ($NO_PROGRESS)
+  --log=""                      Set to a filename or --log=- for stdout; defaults to no log output ($LOG_TARGET)
 
 
 LOAD
 
-  Usage: dyndump load [--silent] [--no-progress] [-mpw] (--filename | --stdin | (--s3-bucket --s3-prefix)) TABLENAME
+Usage: dyndump load [--silent] [--no-progress] [--log] [-mpw] [--allow-overwrite] (--filename | --stdin | (--s3-bucket --s3-prefix)) TABLENAME
 
-  Load a table dump from S3 or file to a DynamoDB table
+Load a table dump from S3 or file to a DynamoDB table
 
-  Arguments:
-    TABLENAME=""   Table name to load into
+Arguments:
+  TABLENAME=""   Table name to load into
 
-  Options:
-    --allow-overwrite=false   Set to true to overwrite any existing rows
-    -f, --filename=""         Filename to read data from.  Set to "-" for stdin
-    --stdin=false             If true then read the dump data from stdin
-    -m, --maxitems=0          Maximum number of items to load.  Set to 0 to process all items
-    -p, --parallel=4          Number of concurrent channels to open to DynamoDB
-    -w, --write-capacity=5    Average aggregate write capacity to use for load (set to 0 for unlimited)
-    --s3-bucket=""            S3 bucket name to read from
-    --s3-prefix=""            Path prefix to use to read data from S3 (eg. "backups/2016-04-01-12:25-")
-    --silent=false            Set to true to disable all non-error output
-    --no-progress=false       Set to true to disable the progress bar
+Options:
+  --allow-overwrite=false   Set to true to overwrite any existing rows ($ALLOW_OVERWRITE)
+  -f, --filename=""         Filename to read data from.  Set to "-" for stdin ($FILENAME)
+  --stdin=false             If true then read the dump data from stdin ($USE_STDIN)
+  --s3-bucket=""            S3 bucket name to read from ($S3_BUCKET)
+  --s3-prefix=""            Path prefix to use to read data from S3 (eg. "backups/2016-04-01-12:25-") ($S3_PREFIX)
+  -m, --maxitems=0          Maximum number of items to load.  Set to 0 to process all items in the table ($MAXITEMS)
+  -p, --parallel=5          Number of concurrent channels to open to DynamoDB ($MAX_PARALLEL)
+  -w, --write-capacity=5    Average aggregate read capacity to use for load (set to 0 for unlimited) ($WRITE_CAPACITY)
+  --max-retries=10          Maximum number of retry attempts to make with AWS services before failing ($AWS_MAX_RETRIES)
+  --silent=false            Set to true to disable all non-error and non-log output ($SILENT)
+  --no-progress=false       Set to true to disable the progress bar ($NO_PROGRESS)
+  --log=""                  Set to a filename or --log=- for stdout; defaults to no log output ($LOG_TARGET)
 
 
 INFO
 
-  Usage: dyndump info --s3-bucket --s3-prefix
+Usage: dyndump info --s3-bucket --s3-prefix
 
-  Display backup metadata from an S3 backup
+Display backup metadata from an S3 backup
 
-  Options:
-    --s3-bucket=""   S3 bucket name to read from
-    --s3-prefix=""   Path prefix to use to read data from S3 (eg. "backups/2016-04-01-12:25-")
+Options:
+  --s3-bucket=""     S3 bucket name to read from ($S3_BUCKET)
+  --s3-prefix=""     Path prefix to use to read data from S3 (eg. "backups/2016-04-01-12:25-") ($S3_PREFIX)
+  --max-retries=10   Maximum number of retry attempts to make with AWS services before failing ($AWS_MAX_RETRIES)
 
 
 DELETE
 
-  Usage: dyndump delete [--silent] [--no-progress] --s3-bucket --s3-prefix [--force]
+Usage: dyndump delete [--silent] [--no-progress] [--log] --s3-bucket --s3-prefix [--force]
 
-  Delete a backup from S3
+Delete a backup from S3
 
-  Options:
-    --s3-bucket=""        S3 bucket name to delete from
-    --s3-prefix=""        Path prefix to use to delete from S3 (eg. "backups/2016-04-01-12:25-")
-    --force=false         Set to true to disable the delete prompt
-    --silent=false        Set to true to disable all non-error output
-    --no-progress=false   Set to true to disable the progress bar
+Options:
+  --s3-bucket=""        S3 bucket name to delete from ($S3_BUCKET)
+  --s3-prefix=""        Path prefix to use to delete data from S3 (eg. "backups/2016-04-01-12:25-") ($S3_PREFIX)
+  --force=false         Set to true to disable the delete prompt ($NO_DELETE_PROMPT)
+  --max-retries=10      Maximum number of retry attempts to make with AWS services before failing ($AWS_MAX_RETRIES)
+  --silent=false        Set to true to disable all non-error and non-log output ($SILENT)
+  --no-progress=false   Set to true to disable the progress bar ($NO_PROGRESS)
+  --log=""              Set to a filename or --log=- for stdout; defaults to no log output ($LOG_TARGET)
 */
 package main
 
 import (
-	"fmt"
 	"os"
-	"time"
 
+	"github.com/gwatts/dyndump/internal/cmd"
 	"github.com/jawher/mow.cli"
 )
 
-const (
-	maxParallel    = 1000
-	statsFrequency = 2 * time.Second
-)
-
-func fail(format string, a ...interface{}) {
-	fmt.Fprintf(os.Stderr, format+"\n", a...)
-	cli.Exit(100)
-}
-
-func checkGTE(value, min int, flag string) {
-	if value < min {
-		fail("%s must be %d or greater", flag, min)
-	}
-}
-
-func checkLTE(value, max int, flag string) {
-	if value > max {
-		fail("%s must be %d or less", flag, max)
-	}
-}
-
 func main() {
-	app := cli.App("dyndump", "Dump and restore DynamoDB database tables")
-	app.LongDesc = "long desc goes here"
+	app := cli.App("dyndump", "Dump and restore DynamoDB database tables to file or S3")
 
-	app.Command("dump", "Dump a table to file or S3", func(cmd *cli.Cmd) {
-		cmd.Spec = "[-cmpr] [--filename | --stdout] [(--s3-bucket --s3-prefix)] TABLENAME"
-		action := &dumper{
-			tableName:      cmd.StringArg("TABLENAME", "", "Table name to dump from Dynamo"),
-			consistentRead: cmd.BoolOpt("c consistent-read", false, "Enable consistent reads (at 2x capacity use)"),
-			filename:       cmd.StringOpt("f filename", "", "Filename to write data to."),
-			stdout:         cmd.BoolOpt("stdout", false, "If true then send the output to stdout"),
-			maxItems:       cmd.IntOpt("m maxitems", 0, "Maximum number of items to dump.  Set to 0 to process all items"),
-			parallel:       cmd.IntOpt("p parallel", 5, "Number of concurrent channels to open to DynamoDB"),
-			readCapacity:   cmd.IntOpt("r read-capacity", 5, "Average aggregate read capacity to use for scan (set to 0 for unlimited)"),
-			s3BucketName:   cmd.StringOpt("s3-bucket", "", "S3 bucket name to upload to"),
-			s3Prefix:       cmd.StringOpt("s3-prefix", "", `Path prefix to use to store data in S3 (eg. "backups/2016-04-01-12:25-")`),
-		}
-
-		cmd.Before = func() {
-			checkGTE(*action.parallel, 1, "--parallel")
-			checkLTE(*action.parallel, maxParallel, "--parallel")
-			checkGTE(*action.maxItems, 0, "--max-items")
-			checkGTE(*action.readCapacity, 0, "--read-capacity")
-			if *action.filename == "" && !*action.stdout && *action.s3BucketName == "" {
-				fail("Either --filename/--stdout and/or --s3-bucket and --s3-prefix must be set")
-			}
-		}
-
-		cmd.Action = actionRunner(cmd, action)
-	})
-
-	app.Command("load", "Load a table dump from S3 or file to a DynamoDB table", func(cmd *cli.Cmd) {
-		cmd.Spec = "[-mpw] [--allow-overwrite] (--filename | --stdin | (--s3-bucket --s3-prefix)) TABLENAME"
-		action := &loader{
-			tableName:      cmd.StringArg("TABLENAME", "", "Table name to load into"),
-			allowOverwrite: cmd.BoolOpt("allow-overwrite", false, "Set to true to overwrite any existing rows"),
-			filename:       cmd.StringOpt("f filename", "", "Filename to read data from.  Set to \"-\" for stdin"),
-			stdin:          cmd.BoolOpt("stdin", false, "If true then read the dump data from stdin"),
-			maxItems:       cmd.IntOpt("m maxitems", 0, "Maximum number of items to load.  Set to 0 to process all items"),
-			parallel:       cmd.IntOpt("p parallel", 4, "Number of concurrent channels to open to DynamoDB"),
-			writeCapacity:  cmd.IntOpt("w write-capacity", 5, "Average aggregate write capacity to use for load (set to 0 for unlimited)"),
-			s3BucketName:   cmd.StringOpt("s3-bucket", "", "S3 bucket name to read from"),
-			s3Prefix:       cmd.StringOpt("s3-prefix", "", `Path prefix to use to read data from S3 (eg. "backups/2016-04-01-12:25-")`),
-		}
-
-		cmd.Before = func() {
-			checkGTE(*action.parallel, 1, "--parallel")
-			checkLTE(*action.parallel, maxParallel, "--parallel")
-			checkGTE(*action.maxItems, 0, "--max-items")
-			checkGTE(*action.writeCapacity, 0, "--write-capacity")
-		}
-
-		cmd.Action = actionRunner(cmd, action)
-	})
-
-	app.Command("info", "Display backup metadata from an S3 backup", func(cmd *cli.Cmd) {
-		cmd.Spec = "--s3-bucket --s3-prefix"
-		action := &metadataDumper{
-			s3BucketName: cmd.StringOpt("s3-bucket", "", "S3 bucket name to read from"),
-			s3Prefix:     cmd.StringOpt("s3-prefix", "", `Path prefix to use to read data from S3 (eg. "backups/2016-04-01-12:25-")`),
-		}
-		cmd.Action = action.run
-	})
-
-	app.Command("delete", "Delete a backup from S3", func(cmd *cli.Cmd) {
-		cmd.Spec = "--s3-bucket --s3-prefix [--force]"
-		action := &deleter{
-			s3BucketName: cmd.StringOpt("s3-bucket", "", "S3 bucket name to delete from"),
-			s3Prefix:     cmd.StringOpt("s3-prefix", "", `Path prefix to use to delete from S3 (eg. "backups/2016-04-01-12:25-")`),
-			force:        cmd.BoolOpt("force", false, "Set to true to disable the delete prompt"),
-		}
-
-		cmd.Action = actionRunner(cmd, action)
-	})
+	cmd.RegisterDumpCommand(app)
+	cmd.RegisterLoadCommand(app)
+	cmd.RegisterInfoCommand(app)
+	cmd.RegisterDeleteCommand(app)
 
 	app.Run(os.Args)
 }
