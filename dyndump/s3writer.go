@@ -7,9 +7,11 @@ package dyndump
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"sync"
@@ -142,14 +144,18 @@ func (w *S3Writer) Abort() error {
 	return w.Close()
 }
 
-func (w *S3Writer) completePart(deltaRaw, deltaCompressed, deltaItems int64) error {
+func (w *S3Writer) completePart(part *BackupPart) error {
 	w.mm.Lock()
 	defer w.mm.Unlock()
 
-	w.md.UncompressedBytes += deltaRaw
-	w.md.CompressedBytes += deltaCompressed
-	w.md.ItemCount += deltaItems
+	w.md.UncompressedBytes += part.UncompressedBytes
+	w.md.CompressedBytes += part.CompressedBytes
+	w.md.ItemCount += part.ItemCount
 	w.md.PartCount++
+
+	// ensure there's enough space for this part num
+	w.md.Parts = growParts(w.md.Parts, part.PartNum)
+	w.md.Parts[part.PartNum-1] = part
 	return w.flushMetadata()
 }
 
@@ -169,9 +175,9 @@ func (w *S3Writer) flushMetadata() error {
 }
 
 // newKey generates the next S3 object key.
-func (w *S3Writer) newKey() string {
+func (w *S3Writer) newKey() (partnum int32, path string) {
 	pn := atomic.AddInt32(&w.partnum, 1)
-	return fmt.Sprintf("%s%09d.json.gz", s3PartPrefix(w.PathPrefix), pn)
+	return pn, fmt.Sprintf("%s%09d.json.gz", s3PartPrefix(w.PathPrefix), pn)
 }
 
 // fail sets the failure error, if not already set
@@ -205,7 +211,10 @@ func (w *S3Writer) worker() {
 	}
 	defer os.Remove(tmpfile.Name())
 
-	gz := gzip.NewWriter(tmpfile)
+	// calculate a hash as gzipped content is written to the output
+	fhash := sha256.New()
+	hashFileWriter := io.MultiWriter(tmpfile, fhash)
+	gz := gzip.NewWriter(hashFileWriter)
 
 	flush := func() error {
 		if err := w.failError(); err != nil {
@@ -215,9 +224,10 @@ func (w *S3Writer) worker() {
 		fsize, _ := tmpfile.Seek(0, 1)
 		tmpfile.Seek(0, 0)
 
+		pn, key := w.newKey()
 		req := &s3.PutObjectInput{
 			Bucket:          aws.String(w.Bucket),
-			Key:             aws.String(w.newKey()),
+			Key:             aws.String(key),
 			Body:            tmpfile,
 			ContentEncoding: aws.String("gzip"),
 			ContentType:     aws.String("application/json"),
@@ -227,7 +237,16 @@ func (w *S3Writer) worker() {
 			return err
 		}
 
-		if err := w.completePart(rawPendingLen, fsize, writeCount); err != nil {
+		part := &BackupPart{
+			PartNum:           int(pn),
+			PartKey:           key,
+			ItemCount:         writeCount,
+			UncompressedBytes: rawPendingLen,
+			CompressedBytes:   fsize,
+			HashSHA256:        fmt.Sprintf("%x", fhash.Sum(nil)),
+		}
+
+		if err := w.completePart(part); err != nil {
 			return err
 		}
 
@@ -235,7 +254,8 @@ func (w *S3Writer) worker() {
 		writeCount = 0
 		tmpfile.Truncate(0)
 		tmpfile.Seek(0, 0)
-		gz.Reset(tmpfile)
+		fhash.Reset()
+		gz.Reset(hashFileWriter)
 		return nil
 	}
 
@@ -273,4 +293,26 @@ func s3MetaKey(prefix string) string {
 }
 func s3PartPrefix(prefix string) string {
 	return prefix + "-part-"
+}
+
+func growParts(parts []*BackupPart, size int) []*BackupPart {
+	if len(parts) >= size {
+		return parts
+	}
+
+	if cap(parts) >= size {
+		return parts[:size]
+	}
+
+	if size > 2*cap(parts) {
+		result := make([]*BackupPart, size)
+		copy(result, parts)
+		return result[:size]
+	}
+
+	for cap(parts) < size {
+		parts = append(parts, nil)
+	}
+
+	return parts[:size]
 }

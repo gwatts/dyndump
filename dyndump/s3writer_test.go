@@ -5,7 +5,10 @@
 package dyndump
 
 import (
+	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -25,18 +28,24 @@ func TestS3NewKey(t *testing.T) {
 		PathPrefix: "aprefix",
 	}
 
-	k := w.newKey()
+	pn, k := w.newKey()
 	if expected := "aprefix-part-000000001.json.gz"; k != expected {
 		t.Errorf("expected=%q actual=%q", expected, k)
 	}
+	if pn != 1 {
+		t.Errorf("expected=%q actual=%q", 1, pn)
+	}
 
-	k = w.newKey()
+	pn, k = w.newKey()
 	if expected := "aprefix-part-000000002.json.gz"; k != expected {
 		t.Errorf("expected=%q actual=%q", expected, k)
 	}
+	if pn != 2 {
+		t.Errorf("expected=%q actual=%q", 2, pn)
+	}
 }
 
-// Setup a writer, send data to it check the the data is sent to s3
+// Setup a writer, send data to it check that the data is sent to S3
 // and shuts down cleanly.
 // As this sets MaxParallel > 1 it should test for races too when the race
 // detector is on.
@@ -101,7 +110,6 @@ func TestS3OK(t *testing.T) {
 				t.Fatalf("Duplicate block %d first seen in s3 key %q, seen again in %q", seed, prevkey, s3key)
 			}
 			if !reflect.DeepEqual(data, randbytes(int(seed), chunkSize)) {
-				fmt.Printf("seed=%d expected/actual=\n%0x\n\n%0x\n", seed, randbytes(int(seed), chunkSize), data)
 				t.Errorf("Incorrect data for s3key=%q seed=%d", s3key, seed)
 			}
 			seen[seed] = s3key
@@ -111,6 +119,22 @@ func TestS3OK(t *testing.T) {
 	// Check no seeds were missed
 	if len(seen) != 256 {
 		t.Error("Incorrect number of seeds seen", len(seen))
+	}
+
+	// validate metadata
+	if len(fs3.metadata.Parts) != len(fs3.parts) {
+		t.Fatal("metadata part count=%d actual=%d", len(fs3.metadata.Parts), len(fs3.parts))
+	}
+
+	for pn, p := range fs3.metadata.Parts {
+		pn += 1
+		pdata, ok := fs3.parts[p.PartKey]
+		if !ok {
+			t.Fatal("No part found with key %s", p.PartKey)
+		}
+		if p.HashSHA256 != pdata.sha256 {
+			t.Errorf("hash mismatch for pn=%d key=%s expected=%q actual=%q", pn, p.PartKey, p.HashSHA256, pdata.sha256)
+		}
 	}
 }
 
@@ -180,12 +204,14 @@ type putdata struct {
 	bucket string
 	enc    string
 	ctype  string
+	sha256 string
 }
 
 type fakeS3 struct {
-	m        sync.Mutex
-	metadata []byte
-	parts    map[string]putdata
+	m           sync.Mutex
+	metadataRaw []byte
+	metadata    Metadata
+	parts       map[string]putdata
 }
 
 func newFakeS3() *fakeS3 {
@@ -195,18 +221,22 @@ func newFakeS3() *fakeS3 {
 func (fs3 *fakeS3) PutObject(input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
 	k := aws.StringValue(input.Key)
 	bucket := aws.StringValue(input.Bucket)
+	buf, err := ioutil.ReadAll(input.Body)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to read body for key %s: %v", k, err)
+	}
 
 	if strings.HasSuffix(k, "meta.json") {
-		data, err := ioutil.ReadAll(input.Body)
-		if err != nil {
-			return nil, fmt.Errorf("Failed to read body for key %s: %v", k, err)
-		}
 		fs3.m.Lock()
-		fs3.metadata = data
+		fs3.metadataRaw = buf
+		if err := json.Unmarshal(buf, &fs3.metadata); err != nil {
+			return nil, fmt.Errorf("Failed to unmarshal metadata for key %s: %v", k, err)
+		}
 		fs3.m.Unlock()
+
 	} else {
 		// gunzip the data and store that
-		gzr, err := gzip.NewReader(input.Body)
+		gzr, err := gzip.NewReader(bytes.NewReader(buf))
 		if err != nil {
 			return nil, fmt.Errorf("Failed to gunzip key %s: %v", k, err)
 		}
@@ -222,6 +252,7 @@ func (fs3 *fakeS3) PutObject(input *s3.PutObjectInput) (*s3.PutObjectOutput, err
 			bucket: bucket,
 			enc:    aws.StringValue(input.ContentEncoding),
 			ctype:  aws.StringValue(input.ContentType),
+			sha256: fmt.Sprintf("%x", sha256.Sum256(buf)),
 		}
 		fs3.m.Unlock()
 	}

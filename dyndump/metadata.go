@@ -40,7 +40,17 @@ type Metadata struct {
 	StartTime         time.Time          `json:"backup_start_time"`  // The time the backup started.
 	EndTime           *time.Time         `json:"backup_end_time"`    // The time the backup was completed, or failed.
 	UncompressedBytes int64              `json:"uncompressed_bytes"` // Size of the uncompressed JSON, in bytes.
-	CompressedBytes   int64              `json:"compressed_bytes"`   // Size of the gzipped JSON takes, in bytes.
+	CompressedBytes   int64              `json:"compressed_bytes"`   // Size of the gzipped JSON, in bytes.
 	ItemCount         int64              `json:"item_count"`         // Number of items in the backup.
 	PartCount         int64              `json:"part_count"`         // Number of S3 objects comprising the backup
+	Parts             []*BackupPart      `json:"backup_part"`        // metadata for each backed up part
+}
+
+type BackupPart struct {
+	PartNum           int    `json:"part_num"`
+	PartKey           string `json:"part_key"`           // The S3 key holding the backup part.
+	ItemCount         int64  `json:"item_count"`         // Number of items in the part.
+	UncompressedBytes int64  `json:"uncompressed_bytes"` // Size of the uncompressed JSON, in bytes.
+	CompressedBytes   int64  `json:"compressed_bytes"`   // Size of the gzipped JSON , in bytes.
+	HashSHA256        string `json:"hash_sha256"`        // SHA256 hash of the compressed ata.
 }
