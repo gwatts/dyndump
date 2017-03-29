@@ -11,9 +11,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/ioutil"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +34,12 @@ const (
 
 	// MinPartSize defines the minimum value that can be used for PartSize.
 	MinPartSize = 1000
+)
+
+const (
+	metaSha256     = "dyndump-sha256"
+	metaItemCount  = "dyndump-itemcount"
+	metaPartNumber = "dyndump-part"
 )
 
 // S3Puter defines the portion of the S3 service required by S3Writer.
@@ -63,6 +71,7 @@ type S3Writer struct {
 	wg              sync.WaitGroup
 	fm              sync.Mutex
 	failed          error
+	metaHash        *hashCalc
 	mm              sync.Mutex // metadata mutex
 }
 
@@ -85,6 +94,7 @@ func NewS3Writer(s3 S3Puter, bucket, pathPrefix string, metadata Metadata) *S3Wr
 		MaxParallel: DefaultS3MaxParallel,
 		md:          metadata,
 		data:        make(chan []byte),
+		metaHash:    newHashCalc(),
 	}
 }
 
@@ -144,18 +154,18 @@ func (w *S3Writer) Abort() error {
 	return w.Close()
 }
 
-func (w *S3Writer) completePart(part *BackupPart) error {
+func (w *S3Writer) completePart(pn int, itemCount, uncompressedBytes, compressedBytes int64, partHash hash.Hash) error {
 	w.mm.Lock()
 	defer w.mm.Unlock()
 
-	w.md.UncompressedBytes += part.UncompressedBytes
-	w.md.CompressedBytes += part.CompressedBytes
-	w.md.ItemCount += part.ItemCount
+	w.metaHash.add(pn-1, partHash)
+	w.md.UncompressedBytes += uncompressedBytes
+	w.md.CompressedBytes += compressedBytes
+	w.md.ItemCount += itemCount
 	w.md.PartCount++
-
-	// ensure there's enough space for this part num
-	w.md.Parts = growParts(w.md.Parts, part.PartNum)
-	w.md.Parts[part.PartNum-1] = part
+	n, hstr := w.metaHash.value()
+	w.md.LastHashed = n
+	w.md.Hash = hstr
 	return w.flushMetadata()
 }
 
@@ -174,7 +184,7 @@ func (w *S3Writer) flushMetadata() error {
 	return err
 }
 
-// newKey generates the next S3 object key.
+// newKey generates the next S3 object key and part metadata key
 func (w *S3Writer) newKey() (partnum int32, path string) {
 	pn := atomic.AddInt32(&w.partnum, 1)
 	return pn, fmt.Sprintf("%s%09d.json.gz", s3PartPrefix(w.PathPrefix), pn)
@@ -225,28 +235,25 @@ func (w *S3Writer) worker() {
 		tmpfile.Seek(0, 0)
 
 		pn, key := w.newKey()
+		fhashStr := fmt.Sprintf("%x", fhash.Sum(nil))
 		req := &s3.PutObjectInput{
 			Bucket:          aws.String(w.Bucket),
 			Key:             aws.String(key),
 			Body:            tmpfile,
 			ContentEncoding: aws.String("gzip"),
 			ContentType:     aws.String("application/json"),
+			Metadata: map[string]*string{
+				metaSha256:     aws.String(fhashStr),
+				metaItemCount:  aws.String(strconv.FormatInt(writeCount, 10)),
+				metaPartNumber: aws.String(strconv.FormatInt(int64(pn), 10)),
+			},
 		}
 		_, err := w.S3.PutObject(req)
 		if err != nil {
 			return err
 		}
 
-		part := &BackupPart{
-			PartNum:           int(pn),
-			PartKey:           key,
-			ItemCount:         writeCount,
-			UncompressedBytes: rawPendingLen,
-			CompressedBytes:   fsize,
-			HashSHA256:        fmt.Sprintf("%x", fhash.Sum(nil)),
-		}
-
-		if err := w.completePart(part); err != nil {
+		if err := w.completePart(int(pn), writeCount, rawPendingLen, fsize, fhash); err != nil {
 			return err
 		}
 
@@ -293,26 +300,4 @@ func s3MetaKey(prefix string) string {
 }
 func s3PartPrefix(prefix string) string {
 	return prefix + "-part-"
-}
-
-func growParts(parts []*BackupPart, size int) []*BackupPart {
-	if len(parts) >= size {
-		return parts
-	}
-
-	if cap(parts) >= size {
-		return parts[:size]
-	}
-
-	if size > 2*cap(parts) {
-		result := make([]*BackupPart, size)
-		copy(result, parts)
-		return result[:size]
-	}
-
-	for cap(parts) < size {
-		parts = append(parts, nil)
-	}
-
-	return parts[:size]
 }

@@ -5,11 +5,15 @@
 package dyndump
 
 import (
+	"crypto/sha256"
+	"fmt"
+	"hash"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/dynamodb"
+	"github.com/gwatts/gomisc/reorder"
 	"github.com/juju/ratelimit"
 )
 
@@ -118,4 +122,45 @@ func (w *rateLimitWaiter) waitForRateLimit(usedCapacity int64) bool {
 		}
 	}
 	return false
+}
+
+// hashCalc receives sha256 hashes of individual parts in whatever
+// order they're written and constructs a entire-backup hash which
+// consists of a hash of newline-terminated part hashes in order
+// sha256("parthash1\nparthash2\n")
+type hashCalc struct {
+	m      sync.Mutex
+	buf    *reorder.Buffer
+	h      hash.Hash
+	hipart int
+}
+
+func newHashCalc() *hashCalc {
+	hc := &hashCalc{
+		h:      sha256.New(),
+		hipart: -1,
+	}
+	hc.buf = reorder.NewBuffer(0, reorder.WriterFunc(func(n int, buf []interface{}) error {
+		// hc.m is already held at the point this is called
+		for _, entry := range buf {
+			h := entry.([]byte)
+			fmt.Fprintf(hc.h, "%x\n", h)
+		}
+		hc.hipart = n + len(buf)
+		return nil
+	}))
+
+	return hc
+}
+
+func (hc *hashCalc) add(pn int, h hash.Hash) error {
+	hc.m.Lock()
+	defer hc.m.Unlock()
+	return hc.buf.Add(pn, h.Sum(nil))
+}
+
+func (hc *hashCalc) value() (int, string) {
+	hc.m.Lock()
+	defer hc.m.Unlock()
+	return hc.hipart, fmt.Sprintf("%x", hc.h.Sum(nil))
 }

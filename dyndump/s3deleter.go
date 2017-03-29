@@ -29,7 +29,7 @@ type S3Deleter struct {
 	s3         S3DeleteGetLister
 	bucket     string // bucket is the name of the S3 Bucket to read from
 	pathPrefix string // pathPrefix is the prefix used to store the backup
-	md         Metadata
+	md         *Metadata
 	delcount   int64
 	abort      int64
 }
@@ -56,7 +56,7 @@ func NewS3Deleter(s3 S3DeleteGetLister, bucket, pathPrefix string) (*S3Deleter, 
 }
 
 // Metadata returns the metadata read by NewS3Deleter.
-func (d *S3Deleter) Metadata() Metadata {
+func (d *S3Deleter) Metadata() *Metadata {
 	return d.md
 }
 

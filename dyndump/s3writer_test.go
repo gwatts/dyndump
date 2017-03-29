@@ -14,6 +14,7 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -86,6 +87,7 @@ func TestS3OK(t *testing.T) {
 
 	// check that all the data was written correctly
 	seen := make(map[byte]string) // map seed number to s3 key
+	shalist := make([]string, len(fs3.parts))
 	for s3key, v := range fs3.parts {
 		if v.bucket != "test-bucket" {
 			t.Error("Incorrect bucket", v.bucket)
@@ -99,10 +101,19 @@ func TestS3OK(t *testing.T) {
 		if !strings.HasPrefix(s3key, "test-prefix") {
 			t.Error("Incorrect key name", s3key)
 		}
+		// make sure the computed sha256 matches the one in the metadata
+		if v.sha256 != aws.StringValue(v.s3meta["dyndump-sha256"]) {
+			t.Errorf("sha256 mismatch for key=%s computed=%s supplied=%s",
+				s3key, v.sha256, aws.StringValue(v.s3meta["dyndump-sha256"]))
+		}
+		partNumber, _ := strconv.Atoi(aws.StringValue(v.s3meta["dyndump-part"]))
+		shalist[partNumber-1] = v.sha256
+
 		// Data was written in blocks of 51 bytes; make sure we got whole multiples of those blocks
 		if len(v.data)%(chunkSize+1) != 0 {
 			t.Errorf("Incorrect data length %d (%d)", len(v.data), len(v.data)%(chunkSize+1))
 		}
+
 		for i := 0; i < len(v.data); i += chunkSize + 1 {
 			seed := v.data[i]
 			data := v.data[i+1 : i+chunkSize+1]
@@ -121,20 +132,22 @@ func TestS3OK(t *testing.T) {
 		t.Error("Incorrect number of seeds seen", len(seen))
 	}
 
-	// validate metadata
-	if len(fs3.metadata.Parts) != len(fs3.parts) {
-		t.Fatal("metadata part count=%d actual=%d", len(fs3.metadata.Parts), len(fs3.parts))
+	// compute the total hash
+	h := sha256.New()
+	for _, ph := range shalist {
+		fmt.Println("hash", ph)
+		fmt.Fprintln(h, ph)
 	}
 
-	for pn, p := range fs3.metadata.Parts {
-		pn += 1
-		pdata, ok := fs3.parts[p.PartKey]
-		if !ok {
-			t.Fatal("No part found with key %s", p.PartKey)
-		}
-		if p.HashSHA256 != pdata.sha256 {
-			t.Errorf("hash mismatch for pn=%d key=%s expected=%q actual=%q", pn, p.PartKey, p.HashSHA256, pdata.sha256)
-		}
+	finalHash := fmt.Sprintf("%x", h.Sum(nil))
+	fmt.Println("Final hash", finalHash)
+	if finalHash != fs3.metadata.Hash {
+		t.Error("metahash mismatch expected=%s actual=%s", fs3.metadata.Hash, finalHash)
+	}
+
+	if fs3.metadata.LastHashed != len(shalist) {
+		t.Error("LastHashed value did not match the number of the last part. expected=%d actual=%d",
+			len(fs3.parts), fs3.metadata.LastHashed)
 	}
 }
 
@@ -205,6 +218,7 @@ type putdata struct {
 	enc    string
 	ctype  string
 	sha256 string
+	s3meta map[string]*string
 }
 
 type fakeS3 struct {
@@ -253,6 +267,7 @@ func (fs3 *fakeS3) PutObject(input *s3.PutObjectInput) (*s3.PutObjectOutput, err
 			enc:    aws.StringValue(input.ContentEncoding),
 			ctype:  aws.StringValue(input.ContentType),
 			sha256: fmt.Sprintf("%x", sha256.Sum256(buf)),
+			s3meta: input.Metadata,
 		}
 		fs3.m.Unlock()
 	}

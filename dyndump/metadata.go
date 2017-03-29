@@ -42,15 +42,7 @@ type Metadata struct {
 	UncompressedBytes int64              `json:"uncompressed_bytes"` // Size of the uncompressed JSON, in bytes.
 	CompressedBytes   int64              `json:"compressed_bytes"`   // Size of the gzipped JSON, in bytes.
 	ItemCount         int64              `json:"item_count"`         // Number of items in the backup.
-	PartCount         int64              `json:"part_count"`         // Number of S3 objects comprising the backup
-	Parts             []*BackupPart      `json:"backup_part"`        // metadata for each backed up part
-}
-
-type BackupPart struct {
-	PartNum           int    `json:"part_num"`
-	PartKey           string `json:"part_key"`           // The S3 key holding the backup part.
-	ItemCount         int64  `json:"item_count"`         // Number of items in the part.
-	UncompressedBytes int64  `json:"uncompressed_bytes"` // Size of the uncompressed JSON, in bytes.
-	CompressedBytes   int64  `json:"compressed_bytes"`   // Size of the gzipped JSON , in bytes.
-	HashSHA256        string `json:"hash_sha256"`        // SHA256 hash of the compressed ata.
+	PartCount         int                `json:"part_count"`         // Number of S3 objects comprising the backup
+	Hash              string             `json:"hash_sha256"`        // SHA256 hash of each newline-separated part's SHA256 hash
+	LastHashed        int                `json:"last_hashed"`        // The part number that was last included in hash_sha256
 }

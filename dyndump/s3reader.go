@@ -5,8 +5,11 @@
 package dyndump
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
+	"sync"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -32,10 +35,18 @@ type S3Reader struct {
 	r             *io.PipeReader
 	w             *io.PipeWriter
 	err           error
+	m             sync.Mutex
+	md            *Metadata
 }
 
 // Metadata returns the backup's metadata information.
-func (r *S3Reader) Metadata() (md Metadata, err error) {
+func (r *S3Reader) Metadata() (md *Metadata, err error) {
+	r.m.Lock()
+	defer r.m.Unlock()
+	if r.md != nil {
+		return r.md, nil
+	}
+
 	mdkey := s3MetaKey(r.PathPrefix)
 	req := &s3.GetObjectInput{
 		Bucket: aws.String(r.Bucket),
@@ -45,8 +56,8 @@ func (r *S3Reader) Metadata() (md Metadata, err error) {
 	if err != nil {
 		return md, err
 	}
-	err = json.NewDecoder(resp.Body).Decode(&md)
-	return md, err
+	err = json.NewDecoder(resp.Body).Decode(&r.md)
+	return r.md, err
 }
 
 // Read reads a block of data from the backup
@@ -57,7 +68,11 @@ func (r *S3Reader) Read(p []byte) (n int, err error) {
 	}
 	if r.r == nil {
 		r.r, r.w = io.Pipe()
-		go r.reader()
+		md, err := r.Metadata()
+		if err != nil {
+			return 0, err
+		}
+		go r.reader(md)
 	}
 	n, err = r.r.Read(p)
 	if err != nil {
@@ -69,13 +84,17 @@ func (r *S3Reader) Read(p []byte) (n int, err error) {
 // reader is a goroutine started by Read that pulls all of the individual
 // backup objects from S3 and sends their data into one half of a pipe
 // for aggregate reads by Read.
-func (r *S3Reader) reader() {
+func (r *S3Reader) reader(md *Metadata) {
 	var closed bool
+	partHash := sha256.New()
+	aggHash := sha256.New() // hash of hashes
+	target := io.MultiWriter(r.w, partHash)
 
 	req := &s3.ListObjectsInput{
 		Bucket: aws.String(r.Bucket),
 		Prefix: aws.String(s3PartPrefix(r.PathPrefix)),
 	}
+	var partCount int
 	err := r.S3.ListObjectsPages(req, func(page *s3.ListObjectsOutput, lastPage bool) bool {
 		for _, value := range page.Contents {
 			req := &s3.GetObjectInput{
@@ -88,19 +107,51 @@ func (r *S3Reader) reader() {
 				closed = true
 				return false
 			}
-			if _, err := io.Copy(r.w, getResp.Body); err != nil {
+			if _, err := io.Copy(target, getResp.Body); err != nil {
 				r.w.CloseWithError(err)
 				closed = true
 				return false
 			}
+			if metahash := aws.StringValue(getResp.Metadata[metaSha256]); metahash != "" {
+				hstr := fmt.Sprintf("%x", partHash.Sum(nil))
+				if hstr != metahash {
+					r.w.CloseWithError(fmt.Errorf("part %s hash mismatch expected=%s actual=%s",
+						value.Key, metahash, hstr))
+				}
+				fmt.Fprintln(aggHash, hstr)
+			}
+			partHash.Reset()
+			partCount++
 		}
 		return true
 	})
-	if !closed {
-		if err != nil {
-			r.w.CloseWithError(err)
-		} else {
-			r.w.Close()
-		}
+
+	if closed {
+		fmt.Println("Exit on close")
+		return
 	}
+
+	if err != nil {
+		r.w.CloseWithError(err)
+		return
+	}
+
+	// check that we received as many parts as the metadata says should exist
+	if md.PartCount > 0 && partCount != md.PartCount {
+		r.w.CloseWithError(fmt.Errorf("incomplete restore; expected %d parts, found %d",
+			md.PartCount, partCount))
+		return
+	}
+
+	// check that the metadata hash matches expected
+	hstr := fmt.Sprintf("%x", aggHash.Sum(nil))
+	fmt.Println("EXP", md.Hash, "Actual", hstr)
+	if md.Hash != "" && md.LastHashed == md.PartCount && hstr != md.Hash {
+		fmt.Println("CORRUPT")
+		r.w.CloseWithError(fmt.Errorf("corrupt restore; expected final hash of %s, got %s",
+			md.Hash, hstr))
+		return
+	}
+
+	r.w.Close()
 }
