@@ -10,13 +10,12 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/cheggaaa/pb"
 	"github.com/gwatts/dyndump/dyndump"
 	"github.com/gwatts/flagvals"
@@ -110,6 +109,7 @@ type writers struct {
 	fileWriter io.WriteCloser
 	s3Writer   *dyndump.S3Writer
 	s3RunErr   chan error
+	names      []string
 }
 
 func (w *writers) Close() error {
@@ -139,15 +139,18 @@ func (w *writers) Abort() {
 	}
 }
 
+func (w *writers) String() string {
+	return strings.Join(w.names, ",")
+}
+
 type dumper struct {
 	f          *dyndump.Fetcher
 	abortChan  chan struct{}
 	tableBytes int64
 	startTime  time.Time
 
-	awsSession *session.Session
-	dyn        *dynamodb.DynamoDB
-	tableInfo  *dynamodb.TableDescription
+	aws       *awsServices
+	tableInfo *dynamodb.TableDescription
 
 	// options
 	tableName      *string
@@ -164,9 +167,8 @@ type dumper struct {
 
 func (d *dumper) openS3Writer() (*dyndump.S3Writer, error) {
 	// check if already exists
-	svc := s3.New(d.awsSession)
 	r := dyndump.S3Reader{
-		S3:         svc,
+		S3:         d.aws.s3,
 		Bucket:     *d.s3BucketName,
 		PathPrefix: *d.s3Prefix,
 	}
@@ -181,11 +183,11 @@ func (d *dumper) openS3Writer() (*dyndump.S3Writer, error) {
 	}
 
 	// metadata wasn't found; ok to continue
-	md = dyndump.Metadata{
+	md = &dyndump.Metadata{
 		TableName: *d.tableName,
 		TableARN:  aws.StringValue(d.tableInfo.TableArn),
 	}
-	return dyndump.NewS3Writer(svc, *d.s3BucketName, *d.s3Prefix, md), nil
+	return dyndump.NewS3Writer(d.aws.s3, *d.s3BucketName, *d.s3Prefix, *md), nil
 }
 
 func (d *dumper) openWriters() *writers {
@@ -194,6 +196,7 @@ func (d *dumper) openWriters() *writers {
 
 	if *d.stdout {
 		fout = os.Stdout
+		ws.names = append(ws.names, "stdout")
 
 	} else if *d.filename != "" {
 		var err error
@@ -201,6 +204,7 @@ func (d *dumper) openWriters() *writers {
 		if err != nil {
 			fail("Failed to open file for write: %s", err)
 		}
+		ws.names = append(ws.names, fmt.Sprintf("file://%s", *d.filename))
 	}
 
 	if *d.s3BucketName != "" {
@@ -211,6 +215,7 @@ func (d *dumper) openWriters() *writers {
 		if err != nil {
 			fail("Failed to open S3 for write: %v", err)
 		}
+		ws.names = append(ws.names, fmt.Sprintf("s3://%s/%s", *d.s3BucketName, *d.s3Prefix))
 		ws.s3Writer = w
 		ws.s3Writer.MaxParallel = int(d.parallel.Value) // match fetcher parallelism
 		ws.s3RunErr = make(chan error)
@@ -234,9 +239,8 @@ func (d *dumper) openWriters() *writers {
 }
 
 func (d *dumper) init() error {
-	d.awsSession = initAWS(d.maxRetries)
-	d.dyn = dynamodb.New(d.awsSession)
-	resp, err := d.dyn.DescribeTable(&dynamodb.DescribeTableInput{
+	d.aws = initAWS(d.maxRetries)
+	resp, err := d.aws.dyn.DescribeTable(&dynamodb.DescribeTableInput{
 		TableName: d.tableName,
 	})
 	if err != nil {
@@ -250,15 +254,17 @@ func (d *dumper) start(termWriter io.Writer, logger *log.Logger) (done chan erro
 	out := d.openWriters()
 	w := dyndump.NewSimpleEncoder(out)
 
-	status := fmt.Sprintf("Beginning scan: table=%q readCapacity=%d parallel=%d itemCount=%d totalSize=%s",
+	status := fmt.Sprintf("Beginning scan: table=%q readCapacity=%d "+
+		"parallel=%d itemCount=%d totalSize=%s targets=%s",
 		*d.tableName, d.readCapacity.Value, d.parallel.Value,
-		aws.Int64Value(d.tableInfo.ItemCount), fmtBytes(aws.Int64Value(d.tableInfo.TableSizeBytes)))
+		aws.Int64Value(d.tableInfo.ItemCount), fmtBytes(aws.Int64Value(d.tableInfo.TableSizeBytes)),
+		out)
 
 	fmt.Fprintln(termWriter, status)
 	logger.Println(status)
 
 	d.f = &dyndump.Fetcher{
-		Dyn:            d.dyn,
+		Dyn:            d.aws.dyn,
 		TableName:      *d.tableName,
 		ConsistentRead: *d.consistentRead,
 		MaxParallel:    int(d.parallel.Value),

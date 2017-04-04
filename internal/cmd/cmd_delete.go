@@ -11,7 +11,6 @@ import (
 	"log"
 
 	"github.com/Bowery/prompt"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/cheggaaa/pb"
 	"github.com/gwatts/dyndump/dyndump"
 	"github.com/gwatts/flagvals"
@@ -67,8 +66,8 @@ type deleter struct {
 }
 
 func (d *deleter) init() error {
-	awsSession := initAWS(d.maxRetries)
-	del, err := dyndump.NewS3Deleter(s3.New(awsSession), *d.s3BucketName, *d.s3Prefix)
+	aws := initAWS(d.maxRetries)
+	del, err := dyndump.NewS3Deleter(aws.s3, *d.s3BucketName, *d.s3Prefix)
 	if err != nil {
 		return err
 	}
@@ -119,7 +118,7 @@ func (d *deleter) formatStats() string {
 }
 
 func (d *deleter) newProgressBar() *pb.ProgressBar {
-	bar := pb.New64(d.del.Metadata().PartCount)
+	bar := pb.New64(int64(d.del.Metadata().PartCount))
 	return bar
 }
 

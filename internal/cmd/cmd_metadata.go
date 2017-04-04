@@ -8,7 +8,6 @@ import (
 	"html/template"
 	"os"
 
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/gwatts/dyndump/dyndump"
 	"github.com/gwatts/flagvals"
 	cli "github.com/jawher/mow.cli"
@@ -66,9 +65,9 @@ type metadataDumper struct {
 }
 
 func (md *metadataDumper) run() {
-	awsSession := initAWS(md.maxRetries)
+	aws := initAWS(md.maxRetries)
 	sr := &dyndump.S3Reader{
-		S3:         s3.New(awsSession),
+		S3:         aws.s3,
 		Bucket:     *md.s3BucketName,
 		PathPrefix: *md.s3Prefix,
 	}

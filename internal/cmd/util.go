@@ -11,7 +11,12 @@ import (
 	"sync/atomic"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/client"
+	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/dynamodb"
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/gwatts/flagvals"
 	cli "github.com/jawher/mow.cli"
 )
@@ -64,11 +69,47 @@ func fail(format string, a ...interface{}) {
 	cli.Exit(100)
 }
 
-func initAWS(maxRetries *flagvals.RangeInt) *session.Session {
-	cfg := aws.NewConfig().WithMaxRetries(int(maxRetries.Value))
+type awsServices struct {
+	s3  *s3.S3
+	dyn *dynamodb.DynamoDB
+}
+
+func initAWS(maxRetries *flagvals.RangeInt) *awsServices {
+	// Workaround for https://github.com/aws/aws-sdk-go/issues/1139
+	r := &CustomRetryer{
+		DefaultRetryer: &client.DefaultRetryer{
+			NumMaxRetries: int(maxRetries.Value),
+		},
+	}
+
+	cfg := aws.NewConfig()
+	cfg = request.WithRetryer(cfg, r)
+
 	s, err := session.NewSession(cfg)
 	if err != nil {
 		fail("Failed to create AWS session: %v", err)
 	}
-	return s
+
+	return &awsServices{
+		s3:  s3.New(s),
+		dyn: dynamodb.New(s),
+	}
+}
+
+type CustomRetryer struct {
+	*client.DefaultRetryer
+}
+
+func (cr *CustomRetryer) ShouldRetry(r *request.Request) bool {
+	// Scan seems to frequently drop connections, which results in a
+	// SerializationError; trap and force a retry.
+	if r.Error != nil && r.Operation.Name == "Scan" {
+		if err, ok := r.Error.(awserr.Error); ok {
+			if err.Code() == "SerializationError" {
+				return true
+			}
+		}
+	}
+
+	return cr.DefaultRetryer.ShouldRetry(r)
 }

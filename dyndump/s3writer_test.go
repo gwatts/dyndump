@@ -266,7 +266,7 @@ func (fs3 *fakeS3) PutObject(input *s3.PutObjectInput) (*s3.PutObjectOutput, err
 			bucket: bucket,
 			enc:    aws.StringValue(input.ContentEncoding),
 			ctype:  aws.StringValue(input.ContentType),
-			sha256: fmt.Sprintf("%x", sha256.Sum256(buf)),
+			sha256: fmt.Sprintf("%x", sha256.Sum256(data)),
 			s3meta: input.Metadata,
 		}
 		fs3.m.Unlock()

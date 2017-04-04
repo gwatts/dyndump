@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -112,8 +113,10 @@ func TestS3ReadOK(t *testing.T) {
 
 				fmt.Printf("Get key %q\n", aws.StringValue(input.Key))
 				resp := &s3.GetObjectOutput{
-					Body:     ioutil.NopCloser(strings.NewReader(testdata.dataByKey[key])),
-					Metadata: map[string]*string{metaSha256: aws.String(testdata.hashesByKey[key])},
+					Body: ioutil.NopCloser(strings.NewReader(testdata.dataByKey[key])),
+					Metadata: map[string]*string{
+						http.CanonicalHeaderKey(metaSha256): aws.String(testdata.hashesByKey[key]),
+					},
 				}
 
 				return resp, nil
@@ -138,6 +141,7 @@ func TestS3ReadOK(t *testing.T) {
 			if s := string(data); s != expected {
 				t.Errorf("expected=%q actual=%q", expected, s)
 			}
+
 		default:
 			// should fail
 			if err == nil {

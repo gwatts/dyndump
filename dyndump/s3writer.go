@@ -55,6 +55,18 @@ type S3Puter interface {
 //
 // Each part is given a key name beginning with PathPrefix and also uploads
 // a metadata file on completion which summarizes the table.
+//
+// A SHA256 hash of the raw (uncompressed) data is calculated for each part
+// and stored with its S3 metadata.
+//
+// A master-hash is computed for the entire backup by taking the hash from
+// each part and concatenating them, in order, joined by newlines (the final
+// hash is also terminated with a newline) and then taking the SHA25 hash
+// of that document.
+//
+// Eg. if there are two parts with part one having a hex formatted hash of
+// "123abc" and  part two having  a hash of "456def", the hash stored
+// in the backup's metadata will be SHA256("123abc\n456def\n").
 type S3Writer struct {
 	S3          S3Puter
 	Bucket      string // S3 bucket name to upload to
@@ -221,10 +233,10 @@ func (w *S3Writer) worker() {
 	}
 	defer os.Remove(tmpfile.Name())
 
-	// calculate a hash as gzipped content is written to the output
+	// calculate a hash of ungzipped content is written to the output
 	fhash := sha256.New()
-	hashFileWriter := io.MultiWriter(tmpfile, fhash)
-	gz := gzip.NewWriter(hashFileWriter)
+	gz := gzip.NewWriter(tmpfile)
+	writer := io.MultiWriter(gz, fhash)
 
 	flush := func() error {
 		if err := w.failError(); err != nil {
@@ -262,7 +274,7 @@ func (w *S3Writer) worker() {
 		tmpfile.Truncate(0)
 		tmpfile.Seek(0, 0)
 		fhash.Reset()
-		gz.Reset(hashFileWriter)
+		gz.Reset(tmpfile)
 		return nil
 	}
 
@@ -272,7 +284,7 @@ func (w *S3Writer) worker() {
 		if failed {
 			continue
 		}
-		gz.Write(data)
+		writer.Write(data)
 		rawPendingLen += int64(len(data))
 		writeCount++
 		intervalBytes += len(data)

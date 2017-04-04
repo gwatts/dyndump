@@ -125,6 +125,7 @@ func actionRunner(cmd *cli.Cmd, action action) func() {
 			case <-sigchan:
 				if bar != nil {
 					bar.Finish()
+					bar = nil
 				}
 				fmt.Fprintf(termWriter, "\nAborting..")
 				action.abort()
@@ -133,14 +134,15 @@ func actionRunner(cmd *cli.Cmd, action action) func() {
 				break LOOP
 
 			case err := <-done:
+				if bar != nil {
+					bar.Finish()
+					bar = nil
+				}
 				if err != nil {
 					fail("Processing failed: %v", err)
 				}
 				break LOOP
 			}
-		}
-		if bar != nil {
-			bar.Finish()
 		}
 
 		if !*silent {

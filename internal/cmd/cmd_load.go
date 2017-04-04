@@ -13,9 +13,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/cheggaaa/pb"
 	"github.com/gwatts/dyndump/dyndump"
 	"github.com/gwatts/flagvals"
@@ -24,7 +22,7 @@ import (
 
 func RegisterLoadCommand(app *cli.Cli) {
 	app.Command("load", "Load a table dump from S3 or file to a DynamoDB table", func(cmd *cli.Cmd) {
-		cmd.Spec = "[-mpw] [--allow-overwrite] (--filename | --stdin | (--s3-bucket --s3-prefix)) TABLENAME"
+		cmd.Spec = "[-mpw] [--allow-overwrite] (--filename | --stdin | (--s3-bucket --s3-prefix)) [--skip-checks] TABLENAME"
 		action := &loader{
 			tableName: cmd.StringArg("TABLENAME", "",
 				"Table name to load into"),
@@ -57,6 +55,12 @@ func RegisterLoadCommand(app *cli.Cli) {
 				Value:  "",
 				Desc:   `Path prefix to use to read data from S3 (eg. "backups/2016-04-01-12:25-")`,
 				EnvVar: "S3_PREFIX",
+			}),
+			skipIntegrityCheck: cmd.Bool(cli.BoolOpt{
+				Name:   "skip-checks",
+				Value:  false,
+				Desc:   "If true then data integrity checks will be skipped during restore",
+				EnvVar: "SKIP_CHECKS",
 			}),
 
 			maxRetries:    flagvals.GTEInt(awsMaxRetries, 0),
@@ -95,39 +99,41 @@ func RegisterLoadCommand(app *cli.Cli) {
 }
 
 type loader struct {
-	loader     *dyndump.Loader
-	abortChan  chan struct{}
-	r          *readWatcher
-	md         dyndump.Metadata
-	startTime  time.Time
-	dyn        *dynamodb.DynamoDB
-	tableInfo  *dynamodb.TableDescription
-	source     string
-	awsSession *session.Session
+	loader    *dyndump.Loader
+	abortChan chan struct{}
+	r         *readWatcher
+	md        *dyndump.Metadata
+	startTime time.Time
+	//dyn        *dynamodb.DynamoDB
+	tableInfo *dynamodb.TableDescription
+	source    string
+	//awsSession *session.Session
+	aws *awsServices
 
 	// options
-	tableName      *string
-	allowOverwrite *bool
-	filename       *string
-	stdin          *bool
-	maxItems       *flagvals.RangeInt
-	parallel       *flagvals.RangeInt
-	writeCapacity  *flagvals.RangeInt
-	s3BucketName   *string
-	s3Prefix       *string
-	maxRetries     *flagvals.RangeInt
+	tableName          *string
+	allowOverwrite     *bool
+	filename           *string
+	stdin              *bool
+	maxItems           *flagvals.RangeInt
+	parallel           *flagvals.RangeInt
+	writeCapacity      *flagvals.RangeInt
+	s3BucketName       *string
+	s3Prefix           *string
+	skipIntegrityCheck *bool
+	maxRetries         *flagvals.RangeInt
 }
 
 func (ld *loader) init() error {
-	ld.awsSession = initAWS(ld.maxRetries)
-	ld.dyn = dynamodb.New(ld.awsSession)
-	resp, err := ld.dyn.DescribeTable(&dynamodb.DescribeTableInput{
+	ld.aws = initAWS(ld.maxRetries)
+	resp, err := ld.aws.dyn.DescribeTable(&dynamodb.DescribeTableInput{
 		TableName: ld.tableName,
 	})
 	if err != nil {
 		return err
 	}
 	ld.tableInfo = resp.Table
+	ld.md = new(dyndump.Metadata)
 
 	switch {
 	case *ld.stdin:
@@ -149,9 +155,10 @@ func (ld *loader) init() error {
 	case *ld.s3BucketName != "":
 		ld.source = fmt.Sprintf("s3://%s/%s", *ld.s3BucketName, *ld.s3Prefix)
 		sr := &dyndump.S3Reader{
-			S3:         s3.New(ld.awsSession),
-			Bucket:     *ld.s3BucketName,
-			PathPrefix: *ld.s3Prefix,
+			S3:                 ld.aws.s3,
+			Bucket:             *ld.s3BucketName,
+			PathPrefix:         *ld.s3Prefix,
+			SkipIntegrityCheck: *ld.skipIntegrityCheck,
 		}
 		ld.r = newReadWatcher(sr)
 		ld.md, err = sr.Metadata()
@@ -179,15 +186,15 @@ func (ld *loader) start(termWriter io.Writer, logger *log.Logger) (done chan err
 
 	status := fmt.Sprintf(
 		"Beginning restore: table=%q source=%q writeCapacity=%d "+
-			"parallel=%d totalSize=%s allow-overwrite=%t\n",
+			"parallel=%d totalSize=%s allow-overwrite=%t skip-checks=%t",
 		*ld.tableName, ld.source, ld.writeCapacity.Value,
-		ld.parallel.Value, fmtBytes(ld.md.UncompressedBytes), *ld.allowOverwrite)
+		ld.parallel.Value, fmtBytes(ld.md.UncompressedBytes), *ld.allowOverwrite, *ld.skipIntegrityCheck)
 
 	fmt.Fprintln(termWriter, status)
 	logger.Println(status)
 
 	ld.loader = &dyndump.Loader{
-		Dyn:            ld.dyn,
+		Dyn:            ld.aws.dyn,
 		TableName:      *ld.tableName,
 		MaxParallel:    int(ld.parallel.Value),
 		MaxItems:       ld.maxItems.Value,

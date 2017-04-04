@@ -25,6 +25,30 @@ Binaries are available for Linux, Solaris, Windows and Mac for the
 
 ## Example
 
+```bash
+$ ./dyndump dump \
+        --log dump.log \
+        --s3-bucket dyndump-test \
+        --s3-prefix backup-20170404-00/test-table-20170404 \
+        --read-capacity 1000 \
+        test-table
+Beginning scan: table="test-table" readCapacity=1000 parallel=5 itemCount=425397 totalSize=2.5 GB targets=s3://dyndump-test/backup-20170404-00/test-table-20170404
+ 224.49 MiB / 2.48 GiB [==>-------------------------]   8.83% 6.60 MiB/s 5m50s
+
+
+$ ./dyndump load \
+		--log restore.log \
+		--s3-bucket dyndump-test \
+		--s3-prefix backup-20170404-00/test-table-20170404
+		--write-capacity 2000 \
+		test-table-copy
+Beginning restore: table="test-table-copy" source="s3://dyndump-test/backup-20170404-00/test-table-20170404" writeCapacity=2000 parallel=5 totalSize=3.4 GB allow-overwrite=false skip-checks=false
+ 3.41 GiB / 3.41 GiB [=============================]  99.99% 2.44 MiB/s 23m50s
+Avg items/sec: 297.48
+Avg capacity/sec: 1977.75
+Total items written:  425397
+Total items skipped:  0
+```
 
 
 ## Utility Usage
@@ -81,7 +105,7 @@ Options:
 Loads a previous dump from file or S3 into an existing DynamoDB table
 
 ```
-Usage: dyndump load [--silent] [--no-progress] [--log] [-mpw] [--allow-overwrite] (--filename | --stdin | (--s3-bucket --s3-prefix)) TABLENAME
+Usage: dyndump load [--silent] [--no-progress] [--log] [-mpw] [--allow-overwrite] (--filename | --stdin | (--s3-bucket --s3-prefix)) [--skip-checks] TABLENAME
 
 Load a table dump from S3 or file to a DynamoDB table
 
@@ -94,6 +118,7 @@ Options:
   --stdin=false             If true then read the dump data from stdin ($USE_STDIN)
   --s3-bucket=""            S3 bucket name to read from ($S3_BUCKET)
   --s3-prefix=""            Path prefix to use to read data from S3 (eg. "backups/2016-04-01-12:25-") ($S3_PREFIX)
+  --skip-checks=false       If true then data integrity checks will be skipped during restore ($SKIP_CHECKS)
   -m, --maxitems=0          Maximum number of items to load.  Set to 0 to process all items in the table ($MAXITEMS)
   -p, --parallel=5          Number of concurrent channels to open to DynamoDB ($MAX_PARALLEL)
   -w, --write-capacity=5    Average aggregate read capacity to use for load (set to 0 for unlimited) ($WRITE_CAPACITY)
