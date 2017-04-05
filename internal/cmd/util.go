@@ -11,9 +11,6 @@ import (
 	"sync/atomic"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/client"
-	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -75,15 +72,7 @@ type awsServices struct {
 }
 
 func initAWS(maxRetries *flagvals.RangeInt) *awsServices {
-	// Workaround for https://github.com/aws/aws-sdk-go/issues/1139
-	r := &CustomRetryer{
-		DefaultRetryer: &client.DefaultRetryer{
-			NumMaxRetries: int(maxRetries.Value),
-		},
-	}
-
-	cfg := aws.NewConfig()
-	cfg = request.WithRetryer(cfg, r)
+	cfg := aws.NewConfig().WithMaxRetries(int(maxRetries.Value))
 
 	s, err := session.NewSession(cfg)
 	if err != nil {
@@ -94,22 +83,4 @@ func initAWS(maxRetries *flagvals.RangeInt) *awsServices {
 		s3:  s3.New(s),
 		dyn: dynamodb.New(s),
 	}
-}
-
-type CustomRetryer struct {
-	*client.DefaultRetryer
-}
-
-func (cr *CustomRetryer) ShouldRetry(r *request.Request) bool {
-	// Scan seems to frequently drop connections, which results in a
-	// SerializationError; trap and force a retry.
-	if r.Error != nil && r.Operation.Name == "Scan" {
-		if err, ok := r.Error.(awserr.Error); ok {
-			if err.Code() == "SerializationError" {
-				return true
-			}
-		}
-	}
-
-	return cr.DefaultRetryer.ShouldRetry(r)
 }
