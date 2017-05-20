@@ -15,7 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/gwatts/flagvals"
-	cli "github.com/jawher/mow.cli"
+	cli "github.com/gwatts/mow.cli"
 )
 
 const (

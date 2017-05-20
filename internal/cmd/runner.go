@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/cheggaaa/pb"
-	"github.com/jawher/mow.cli"
+	"github.com/gwatts/mow.cli"
 )
 
 type action interface {

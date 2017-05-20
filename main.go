@@ -126,7 +126,7 @@ import (
 	"os"
 
 	"github.com/gwatts/dyndump/internal/cmd"
-	"github.com/jawher/mow.cli"
+	"github.com/gwatts/mow.cli"
 )
 
 func main() {

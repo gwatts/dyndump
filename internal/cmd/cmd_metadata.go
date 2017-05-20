@@ -10,7 +10,7 @@ import (
 
 	"github.com/gwatts/dyndump/dyndump"
 	"github.com/gwatts/flagvals"
-	cli "github.com/jawher/mow.cli"
+	cli "github.com/gwatts/mow.cli"
 )
 
 func RegisterInfoCommand(app *cli.Cli) {
