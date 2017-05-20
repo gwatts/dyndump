@@ -34,7 +34,7 @@ type progressLogger interface {
 // actionRunner handles running an action which may take a while to complete
 // providing progress bars and signal handling.
 func actionRunner(cmd *cli.Cmd, action action) func() {
-	cmd.Spec = "[--silent] [--no-progress] [--log] " + cmd.Spec
+	cmd.Spec = "[--silent] [--no-progress] [--log] [--log-timestamp] " + cmd.Spec
 	silent := cmd.Bool(cli.BoolOpt{
 		Name:   "silent",
 		Value:  false,
@@ -50,8 +50,14 @@ func actionRunner(cmd *cli.Cmd, action action) func() {
 	logTarget := cmd.String(cli.StringOpt{
 		Name:   "log",
 		Value:  "",
-		Desc:   "Set to a filename or --log=- for stdout; defaults to no log output",
+		Desc:   "Set to a filename or --log=- for stdout, --log=stderr for stderr; defaults to no log output",
 		EnvVar: "LOG_TARGET",
+	})
+	logTimestamp := cmd.String(cli.StringOpt{
+		Name:   "log-timestamp",
+		Value:  time.RFC3339,
+		Desc:   "Prefix events with specified timestamp format; set to empty string to omit timestamp.",
+		EnvVar: "LOG_TIMESTAMP",
 	})
 
 	return func() {
@@ -63,8 +69,10 @@ func actionRunner(cmd *cli.Cmd, action action) func() {
 		nullLogger := log.New(ioutil.Discard, "", log.LstdFlags)
 
 		switch target := *logTarget; target {
-		case "-":
-			logger = log.New(os.Stdout, "", log.LstdFlags)
+		case "-", "stdout":
+			logger = log.New(writerForTimeFormat(os.Stdout, *logTimestamp), "", 0)
+		case "stderr":
+			logger = log.New(writerForTimeFormat(os.Stderr, *logTimestamp), "", 0)
 		case "":
 			logger = nullLogger
 		default:
@@ -73,7 +81,7 @@ func actionRunner(cmd *cli.Cmd, action action) func() {
 				fail("could not open logfile for write: %s", err)
 			}
 			defer f.Close()
-			logger = log.New(f, "", log.LstdFlags)
+			logger = log.New(writerForTimeFormat(f, *logTimestamp), "", log.LstdFlags)
 		}
 
 		if logger != nullLogger {
@@ -149,4 +157,21 @@ func actionRunner(cmd *cli.Cmd, action action) func() {
 			action.printFinalStats(termWriter)
 		}
 	}
+}
+
+type timestampWriter struct {
+	w      io.Writer
+	format string
+}
+
+func writerForTimeFormat(w io.Writer, format string) io.Writer {
+	if format == "" {
+		return w
+	}
+	return &timestampWriter{w: w, format: format + " "}
+}
+
+func (w timestampWriter) Write(p []byte) (n int, err error) {
+	buf := append([]byte(time.Now().Format(w.format)), p...)
+	return w.w.Write(buf)
 }
