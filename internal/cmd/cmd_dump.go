@@ -190,7 +190,7 @@ func (d *dumper) openS3Writer() (*dyndump.S3Writer, error) {
 	return dyndump.NewS3Writer(d.aws.s3, *d.s3BucketName, *d.s3Prefix, *md), nil
 }
 
-func (d *dumper) openWriters() *writers {
+func (d *dumper) openWriters() (*writers, error) {
 	var fout io.Writer
 	ws := new(writers)
 
@@ -202,18 +202,18 @@ func (d *dumper) openWriters() *writers {
 		var err error
 		fout, err = os.Create(*d.filename)
 		if err != nil {
-			fail("Failed to open file for write: %s", err)
+			return nil, fmt.Errorf("Failed to open file for write: %s", err)
 		}
 		ws.names = append(ws.names, fmt.Sprintf("file://%s", *d.filename))
 	}
 
 	if *d.s3BucketName != "" {
 		if *d.s3Prefix == "" {
-			fail("s3-prefix not set")
+			return nil, errors.New("s3-prefix not set")
 		}
 		w, err := d.openS3Writer()
 		if err != nil {
-			fail("Failed to open S3 for write: %v", err)
+			return nil, fmt.Errorf("Failed to open S3 for write: %v", err)
 		}
 		ws.names = append(ws.names, fmt.Sprintf("s3://%s/%s", *d.s3BucketName, *d.s3Prefix))
 		ws.s3Writer = w
@@ -226,16 +226,16 @@ func (d *dumper) openWriters() *writers {
 			ws.Writer = ws.s3Writer
 		}
 		go func() { ws.s3RunErr <- ws.s3Writer.Run() }()
-		return ws
+		return ws, nil
 	}
 
 	if fout == nil {
-		fail("Either s3-bucket & s3-prefix, or filename must be set")
+		return nil, errors.New("Either s3-bucket & s3-prefix, or filename must be set")
 	}
 
 	// no s3
 	ws.Writer = fout
-	return ws
+	return ws, nil
 }
 
 func (d *dumper) init() error {
@@ -251,7 +251,12 @@ func (d *dumper) init() error {
 }
 
 func (d *dumper) start(termWriter io.Writer, logger *log.Logger) (done chan error, err error) {
-	out := d.openWriters()
+	out, err := d.openWriters()
+	if err != nil {
+		logger.Print(err.Error())
+		fail(err.Error())
+	}
+
 	w := dyndump.NewSimpleEncoder(out)
 
 	status := fmt.Sprintf("Beginning scan: table=%q readCapacity=%d "+
@@ -341,11 +346,13 @@ func (d *dumper) abort() {
 	d.abortChan <- struct{}{}
 }
 
-func (d *dumper) printFinalStats(w io.Writer) {
+func (d *dumper) printFinalStats(writers ...io.Writer) {
 	finalStats := d.f.Stats()
 	deltaSeconds := float64(time.Since(d.startTime) / time.Second)
 
-	fmt.Fprintf(w, "Avg items/sec: %.2f\n", float64(finalStats.ItemsRead)/deltaSeconds)
-	fmt.Fprintf(w, "Avg capacity/sec: %.2f\n", finalStats.CapacityUsed/deltaSeconds)
-	fmt.Fprintln(w, "Total items read: ", finalStats.ItemsRead)
+	for _, w := range writers {
+		fmt.Fprintf(w, "Avg items/sec: %.2f\n", float64(finalStats.ItemsRead)/deltaSeconds)
+		fmt.Fprintf(w, "Avg capacity/sec: %.2f\n", finalStats.CapacityUsed/deltaSeconds)
+		fmt.Fprintln(w, "Total items read: ", finalStats.ItemsRead)
+	}
 }

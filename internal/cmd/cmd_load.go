@@ -163,7 +163,7 @@ func (ld *loader) init() error {
 		ld.r = newReadWatcher(sr)
 		ld.md, err = sr.Metadata()
 		if err != nil {
-			fail("Failed to read metadata from S3: %v", err)
+			return fmt.Errorf("Failed to read metadata from S3: %v", err)
 		}
 
 	default:
@@ -181,6 +181,7 @@ func (ld *loader) start(termWriter io.Writer, logger *log.Logger) (done chan err
 		}
 	}
 	if hashKey == "" {
+		logger.Println("Failed to find hash key for table")
 		fail("Failed to find hash key for table")
 	}
 
@@ -265,12 +266,14 @@ func (ld *loader) logProgress(logger *log.Logger) {
 	logger.Printf("Restore in progress - current stats %s", ld.formatStats())
 }
 
-func (ld *loader) printFinalStats(w io.Writer) {
+func (ld *loader) printFinalStats(writers ...io.Writer) {
 	finalStats := ld.loader.Stats()
 	deltaSeconds := float64(time.Since(ld.startTime) / time.Second)
 
-	fmt.Fprintf(w, "Avg items/sec: %.2f\n", float64(finalStats.ItemsWritten)/deltaSeconds)
-	fmt.Fprintf(w, "Avg capacity/sec: %.2f\n", finalStats.CapacityUsed/deltaSeconds)
-	fmt.Fprintln(w, "Total items written: ", finalStats.ItemsWritten)
-	fmt.Fprintln(w, "Total items skipped: ", finalStats.ItemsSkipped)
+	for _, w := range writers {
+		fmt.Fprintf(w, "Avg items/sec: %.2f\n", float64(finalStats.ItemsWritten)/deltaSeconds)
+		fmt.Fprintf(w, "Avg capacity/sec: %.2f\n", finalStats.CapacityUsed/deltaSeconds)
+		fmt.Fprintln(w, "Total items written: ", finalStats.ItemsWritten)
+		fmt.Fprintln(w, "Total items skipped: ", finalStats.ItemsSkipped)
+	}
 }

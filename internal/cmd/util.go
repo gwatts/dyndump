@@ -7,6 +7,7 @@ package cmd
 import (
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"sync/atomic"
 
@@ -83,4 +84,14 @@ func initAWS(maxRetries *flagvals.RangeInt) *awsServices {
 		s3:  s3.New(s),
 		dyn: dynamodb.New(s),
 	}
+}
+
+// logWriter makes a log.Logger  comply with the io.Writer interface
+type logWriter struct {
+	*log.Logger
+}
+
+func (w logWriter) Write(p []byte) (n int, err error) {
+	w.Print(string(p))
+	return len(p), nil
 }

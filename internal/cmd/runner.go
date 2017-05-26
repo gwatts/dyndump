@@ -24,7 +24,7 @@ type action interface {
 	updateProgress(bar *pb.ProgressBar)
 	start(termWriter io.Writer, logWriter *log.Logger) (doneChan chan error, err error)
 	abort()
-	printFinalStats(w io.Writer)
+	printFinalStats(w ...io.Writer)
 }
 
 type progressLogger interface {
@@ -95,11 +95,13 @@ func actionRunner(cmd *cli.Cmd, action action) func() {
 		}
 
 		if err := action.init(); err != nil {
+			logger.Printf("Initialization failed: %v", err)
 			fail("Initialization failed: %v", err)
 		}
 
 		done, err := action.start(termWriter, logger)
 		if err != nil {
+			logger.Printf("Startup failed: %v", err)
 			fail("Startup failed: %v", err)
 		}
 
@@ -136,9 +138,11 @@ func actionRunner(cmd *cli.Cmd, action action) func() {
 					bar = nil
 				}
 				fmt.Fprintf(termWriter, "\nAborting..")
+				logger.Println("Abort request received")
 				action.abort()
 				<-done
 				fmt.Fprintf(termWriter, "Aborted.\n")
+				logger.Println("Aborted")
 				break LOOP
 
 			case err := <-done:
@@ -147,14 +151,17 @@ func actionRunner(cmd *cli.Cmd, action action) func() {
 					bar = nil
 				}
 				if err != nil {
+					logger.Printf("Processing failed: %v", err)
 					fail("Processing failed: %v", err)
 				}
 				break LOOP
 			}
 		}
 
-		if !*silent {
-			action.printFinalStats(termWriter)
+		if *silent {
+			action.printFinalStats(termWriter, logWriter{logger})
+		} else {
+			action.printFinalStats(logWriter{logger})
 		}
 	}
 }

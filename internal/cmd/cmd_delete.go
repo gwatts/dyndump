@@ -74,7 +74,8 @@ func (d *deleter) init() error {
 	d.s3Path = fmt.Sprintf("s3://%s/%s", *d.s3BucketName, *d.s3Prefix)
 
 	if !*d.force {
-		fmt.Printf("Delete backup of table %s from s3://%s/%s\n\n", del.Metadata().TableName, *d.s3BucketName, *d.s3Prefix)
+		fmt.Printf("Delete backup of table %s from s3://%s/%s\n\n",
+			del.Metadata().TableName, *d.s3BucketName, *d.s3Prefix)
 		ok, err := prompt.Ask("Are you sure you wish to delete the above backup")
 
 		if err != nil {
@@ -130,7 +131,9 @@ func (d *deleter) abort() {
 	d.del.Abort()
 }
 
-func (d *deleter) printFinalStats(w io.Writer) {
-	fmt.Fprintf(w, "Deleted %d parts from s3://%s/%s\n",
-		d.del.Completed(), *d.s3BucketName, *d.s3Prefix)
+func (d *deleter) printFinalStats(writers ...io.Writer) {
+	for _, w := range writers {
+		fmt.Fprintf(w, "Deleted %d parts from s3://%s/%s\n",
+			d.del.Completed(), *d.s3BucketName, *d.s3Prefix)
+	}
 }
