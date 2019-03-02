@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cheggaaa/pb"
 	"github.com/jawher/mow.cli"
+	"gopkg.in/cheggaaa/pb.v1"
 )
 
 type action interface {

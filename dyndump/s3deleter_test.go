@@ -54,7 +54,7 @@ func TestDeleteOK(t *testing.T) {
 					page := &s3.ListObjectsOutput{
 						Contents: []*s3.Object{
 							{Key: aws.String(fmt.Sprintf("test-prefix-part-%09d.json.gz", 0+(2*i)))},
-							{Key: aws.String(fmt.Sprintf("test-prefix-ignore-this.json.gz", i))},
+							{Key: aws.String("test-prefix-ignore-this.json.gz")},
 							{Key: aws.String(fmt.Sprintf("test-prefix-part-%09d.json.gz", 1+(2*i)))},
 						},
 					}

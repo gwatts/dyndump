@@ -12,8 +12,8 @@ import (
 	"github.com/Bowery/prompt"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/cheggaaa/pb"
 	"github.com/gwatts/dyndump/dyndump"
+	"gopkg.in/cheggaaa/pb.v1"
 )
 
 type deleter struct {
