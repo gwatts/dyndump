@@ -57,6 +57,15 @@ Options:
   --silent=false                Set to true to disable all non-error output
   --no-progress=false           Set to true to disable the progress bar
 ```
+#### Example
+Dump to file
+```
+dyndump dump --filename="tableOut" myTableName
+```
+Dump to S3, note prefix is required, `/` denotes the root of the bucket
+```
+dyndump dump --s3-bucket="myS3BucketName" --s3-prefix="/" myTableName
+```
 
 ### Load
 
