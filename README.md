@@ -31,6 +31,11 @@ environment variables, or will be loaded from ~/.aws/credentials or using EC2 me
 * `AWS_ACCESS_KEY_ID`
 * `AWS_SECRET_ACCESS_KEY`
 
+Alternatively, if you have profiles set up
+
+* `AWS_REGION`
+* `AWS_PROFILE`
+
 The dyndump program supports four commands:
 
 ### Dump
